@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.3.0...v1.4.0) (2026-06-13)
+
+
+### Features
+
+* **tools:** 5 semantic MCP tools + profile gate (AGENT-10 + AGENT-11) ([#10](https://github.com/ItsJennyFiggy/plane-mcp/issues/10)) ([c651fe7](https://github.com/ItsJennyFiggy/plane-mcp/commit/c651fe7b721d290e9d260f6671abd7ae15623b10))
+
 ## [1.3.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.2.0...v1.3.0) (2026-06-13)
 
 
