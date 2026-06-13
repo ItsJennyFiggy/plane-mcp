@@ -42,6 +42,26 @@ func TestConvertHTMLToMarkdown(t *testing.T) {
 			input:    `<p>Check <a href="https://example.com">this link</a>.</p>`,
 			expected: "Check [this link](https://example.com).",
 		},
+		{
+			name:     "Table conversion",
+			input:    "<table><thead><tr><th>Name</th><th>Role</th></tr></thead><tbody><tr><td>Alice</td><td>Admin</td></tr><tr><td>Bob</td><td>Editor</td></tr></tbody></table>",
+			expected: "| Name  | Role   |\n|-------|--------|\n| Alice | Admin  |\n| Bob   | Editor |",
+		},
+		{
+			name:     "Strikethrough conversion",
+			input:    "<p>This is <del>deprecated</del> <s>old</s> <strike>gone</strike>.</p>",
+			expected: "This is ~~deprecated~~ ~~old~~ ~~gone~~.",
+		},
+		{
+			name:     "Tiptap task list checked and unchecked",
+			input:    `<ul data-type="taskList"><li data-type="taskItem" data-checked="true">Done task</li><li data-type="taskItem" data-checked="false">Pending task</li></ul>`,
+			expected: "- [x] Done task\n- [ ] Pending task",
+		},
+		{
+			name:     "Regular ul unaffected by tasklist renderer",
+			input:    "<ul><li>Normal item</li></ul>",
+			expected: "- Normal item",
+		},
 	}
 
 	for _, tt := range tests {
