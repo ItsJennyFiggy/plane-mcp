@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# .agents/bin/terraform
+# Intercepts `terraform apply` / `destroy` inside agent shells (Arc A BOOT-8).
+# Installed ahead of the real terraform in PATH by agent-shell.
+
+set -euo pipefail
+
+REAL_TERRAFORM=$(command -v -p terraform || true)
+if [[ -z "$REAL_TERRAFORM" ]]; then
+  for candidate in /opt/homebrew/bin/terraform /usr/local/bin/terraform; do
+    [[ -x "$candidate" ]] && REAL_TERRAFORM="$candidate" && break
+  done
+fi
+
+if [[ -z "$REAL_TERRAFORM" ]]; then
+  echo "terraform: real binary not found" >&2
+  exit 127
+fi
+
+if [[ "${AGENT_SHELL:-0}" == "1" ]]; then
+  for arg in "$@"; do
+    case "$arg" in
+      apply|destroy)
+        echo "BLOCKED: 'terraform $arg' is not permitted in agent environments." >&2
+        echo "Applies run only via CI on human-merged main (see governance.md)." >&2
+        exit 1
+        ;;
+      -*) continue ;;
+      *) break ;;  # first non-flag arg is the subcommand; if it wasn't apply/destroy, allow
+    esac
+  done
+fi
+
+exec "$REAL_TERRAFORM" "$@"

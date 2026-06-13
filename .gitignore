@@ -1,0 +1,75 @@
+# System/OS files
+.DS_Store
+Thumbs.db
+*.log
+
+# IDEs and editors
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*~
+
+# Secrets, private keys, local configurations
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+.env.*.local
+*.pem
+*.key
+*.token
+private_key
+
+# Package manager and local overrides
+node_modules/
+jspm_packages/
+bower_components/
+.npm/
+.yarn-cache/
+.pnp.*
+
+# Build artifacts & caches
+dist/
+build/
+out/
+.cache/
+.parcel-cache/
+.eslintcache
+.tsbuildinfo
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+htmlcov/
+nosetests.xml
+coverage.xml
+*.cover
+.venv/
+venv/
+ENV/
+env/
+
+# Go build artifacts
+*.exe
+*.test
+*.out
+bin/
+# Exception: agent scripts are not build artifacts
+!.agents/bin/
+
+# Rust build artifacts
+target/
+
+# Agent-specific CLI caches
+.antigravitycli/

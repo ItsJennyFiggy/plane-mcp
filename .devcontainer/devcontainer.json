@@ -1,0 +1,21 @@
+{
+  "name": "template-base (human)",
+  "image": "mcr.microsoft.com/devcontainers/base:2.0.5-ubuntu-24.04",
+  "mounts": [
+    "source=${localEnv:HOME}/.aws,target=/root/.aws,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.gitconfig,target=/root/.gitconfig,type=bind,consistency=cached"
+  ],
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash"
+      },
+      "extensions": [
+        "hashicorp.terraform",
+        "ms-azuretools.vscode-docker",
+        "github.vscode-pull-request-github"
+      ]
+    }
+  },
+  "postCreateCommand": "echo 'Human dev container ready. Full AWS + git access active.'"
+}

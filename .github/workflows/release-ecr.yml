@@ -1,0 +1,21 @@
+name: Release Docker Image (ECR)
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  release-ecr:
+    uses: ItsJennyFiggy/itsjennyfiggy-platform/.github/workflows/reusable-ecr-build-push.yml@main
+    with:
+      repository: ${{ github.repository }}
+      ref: ${{ github.ref_name }}
+      ecr_repository: itsjennyfiggy-template-go # Consumers change this to their ECR repository name
+      aws_region: us-west-2
+      role_to_assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+    secrets: inherit

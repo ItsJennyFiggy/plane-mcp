@@ -1,0 +1,19 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+# Distributed by template-sync-orchestrator from template-base. Do not edit
+# in consumer repos — changes will be overwritten by the sync.
+#   RELEASE_TYPE     (repo Actions var, set via Terraform) — empty/unset = job skipped
+#   UPDATE_MAJOR_TAG (repo Actions var) — 'true' moves the floating major tag
+jobs:
+  release:
+    if: vars.RELEASE_TYPE != ''
+    uses: ItsJennyFiggy/release-workflows/.github/workflows/release.yml@v1
+    with:
+      release_type: ${{ vars.RELEASE_TYPE }}
+      update_major_tag: ${{ vars.UPDATE_MAJOR_TAG == 'true' }}
+    secrets: inherit
