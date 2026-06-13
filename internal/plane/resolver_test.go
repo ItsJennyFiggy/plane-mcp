@@ -375,6 +375,109 @@ func TestResolverFailures(t *testing.T) {
 	})
 }
 
+func TestResolverGetCallerID(t *testing.T) {
+	cfg := &config.Config{
+		PlaneAPIKey:        "test-key",
+		PlaneBaseURL:       "https://plane.example.com",
+		PlaneWorkspaceSlug: "test-workspace",
+	}
+
+	t.Run("First call hits API and returns ID", func(t *testing.T) {
+		// Arrange
+		client := NewClient(cfg)
+		resolver := NewResolver(client)
+		requestCount := 0
+
+		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+			requestCount++
+			expectedPath := "/api/v1/workspaces/test-workspace/me/"
+			if req.URL.Path != expectedPath {
+				t.Errorf("expected path '%s', got '%s'", expectedPath, req.URL.Path)
+			}
+			body := `{"id": "` + userUUID1 + `", "display_name": "Figgy Bot", "email": "figgy@example.com"}`
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		})
+
+		// Act
+		id, err := resolver.GetCallerID(context.Background())
+
+		// Assert
+		if err != nil {
+			t.Fatalf("GetCallerID failed: %v", err)
+		}
+		if id != userUUID1 {
+			t.Errorf("expected ID '%s', got '%s'", userUUID1, id)
+		}
+		if requestCount != 1 {
+			t.Errorf("expected exactly 1 API request, got %d", requestCount)
+		}
+	})
+
+	t.Run("Second call returns cached value without extra API request", func(t *testing.T) {
+		// Arrange
+		client := NewClient(cfg)
+		resolver := NewResolver(client)
+		requestCount := 0
+
+		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+			requestCount++
+			body := `{"id": "` + userUUID1 + `", "display_name": "Figgy Bot", "email": "figgy@example.com"}`
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		})
+
+		// Act: call twice
+		id1, err := resolver.GetCallerID(context.Background())
+		if err != nil {
+			t.Fatalf("first GetCallerID failed: %v", err)
+		}
+		id2, err := resolver.GetCallerID(context.Background())
+		if err != nil {
+			t.Fatalf("second GetCallerID failed: %v", err)
+		}
+
+		// Assert: both return same ID and only one HTTP request was made
+		if id1 != userUUID1 {
+			t.Errorf("expected id1 '%s', got '%s'", userUUID1, id1)
+		}
+		if id2 != userUUID1 {
+			t.Errorf("expected id2 '%s', got '%s'", userUUID1, id2)
+		}
+		if requestCount != 1 {
+			t.Errorf("expected exactly 1 API request (cache hit on second call), got %d", requestCount)
+		}
+	})
+
+	t.Run("API error propagates", func(t *testing.T) {
+		// Arrange
+		client := NewClient(cfg)
+		resolver := NewResolver(client)
+
+		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: 401,
+				Body:       io.NopCloser(strings.NewReader("unauthorized")),
+			}, nil
+		})
+
+		// Act
+		_, err := resolver.GetCallerID(context.Background())
+
+		// Assert
+		if err == nil {
+			t.Fatal("expected error on 401, got nil")
+		}
+		if !strings.Contains(err.Error(), "failed to identify caller") {
+			t.Errorf("expected error to mention 'failed to identify caller', got: %v", err)
+		}
+	})
+}
+
 func TestResolveWorkItemFallback(t *testing.T) {
 	cfg := &config.Config{
 		PlaneAPIKey:        "test-key",

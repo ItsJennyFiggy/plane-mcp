@@ -309,3 +309,69 @@ func (c *Client) GetWorkItemByIdentifier(ctx context.Context, projectIdentifier 
 	}
 	return &item, nil
 }
+
+// GetMe returns the workspace member record for the current API key's owner.
+// Path: GET /api/v1/workspaces/{slug}/me/
+func (c *Client) GetMe(ctx context.Context) (*Member, error) {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/me/", c.WorkspaceSlug)
+	var member Member
+	err := c.request(ctx, "GET", path, nil, nil, &member)
+	if err != nil {
+		return nil, err
+	}
+	return &member, nil
+}
+
+// ListWorkItems lists work items in a project with optional filter params.
+// Path: GET /api/v1/workspaces/{slug}/projects/{projectID}/work-items/
+// The caller-provided params are forwarded as query params (e.g. assignees, state_group).
+func (c *Client) ListWorkItems(ctx context.Context, projectID string, params map[string]string) ([]WorkItem, error) {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/work-items/", c.WorkspaceSlug, projectID)
+	return listAllGeneric[WorkItem](ctx, c, path, params)
+}
+
+// CreateWorkItem creates a new work item in a project.
+// Path: POST /api/v1/workspaces/{slug}/projects/{projectID}/work-items/
+func (c *Client) CreateWorkItem(ctx context.Context, projectID string, body map[string]any) (*WorkItem, error) {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/work-items/", c.WorkspaceSlug, projectID)
+	var item WorkItem
+	err := c.request(ctx, "POST", path, nil, body, &item)
+	if err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
+// UpdateWorkItem partially updates a work item via PATCH.
+// Path: PATCH /api/v1/workspaces/{slug}/projects/{projectID}/work-items/{workItemID}/
+func (c *Client) UpdateWorkItem(ctx context.Context, projectID, workItemID string, body map[string]any) (*WorkItem, error) {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/work-items/%s/", c.WorkspaceSlug, projectID, workItemID)
+	var item WorkItem
+	err := c.request(ctx, "PATCH", path, nil, body, &item)
+	if err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
+// CreateWorkItemComment posts a comment on a work item.
+// Path: POST /api/v1/workspaces/{slug}/projects/{projectID}/work-items/{workItemID}/comments/
+// The text is wrapped in <p>...</p> for the comment_html field.
+func (c *Client) CreateWorkItemComment(ctx context.Context, projectID, workItemID, text string) error {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/work-items/%s/comments/", c.WorkspaceSlug, projectID, workItemID)
+	body := map[string]any{
+		"comment_html": "<p>" + text + "</p>",
+	}
+	return c.request(ctx, "POST", path, nil, body, nil)
+}
+
+// CreateWorkItemLink attaches a URL to a work item.
+// Path: POST /api/v1/workspaces/{slug}/projects/{projectID}/work-items/{workItemID}/links/
+func (c *Client) CreateWorkItemLink(ctx context.Context, projectID, workItemID, rawURL, title string) error {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/work-items/%s/links/", c.WorkspaceSlug, projectID, workItemID)
+	body := map[string]any{
+		"url":   rawURL,
+		"title": title,
+	}
+	return c.request(ctx, "POST", path, nil, body, nil)
+}
