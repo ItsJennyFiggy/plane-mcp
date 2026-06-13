@@ -310,10 +310,10 @@ func (c *Client) GetWorkItemByIdentifier(ctx context.Context, projectIdentifier 
 	return &item, nil
 }
 
-// GetMe returns the workspace member record for the current API key's owner.
-// Path: GET /api/v1/workspaces/{slug}/me/
+// GetMe returns the user record for the current API key's owner.
+// Path: GET /api/v1/users/me/
 func (c *Client) GetMe(ctx context.Context) (*Member, error) {
-	path := fmt.Sprintf("/api/v1/workspaces/%s/me/", c.WorkspaceSlug)
+	path := "/api/v1/users/me/"
 	var member Member
 	err := c.request(ctx, "GET", path, nil, nil, &member)
 	if err != nil {
