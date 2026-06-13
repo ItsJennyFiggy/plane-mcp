@@ -53,9 +53,18 @@ func TestConvertHTMLToMarkdown(t *testing.T) {
 			expected: "This is ~~deprecated~~ ~~old~~ ~~gone~~.",
 		},
 		{
-			name:     "Tiptap task list checked and unchecked",
-			input:    `<ul data-type="taskList"><li data-type="taskItem" data-checked="true">Done task</li><li data-type="taskItem" data-checked="false">Pending task</li></ul>`,
-			expected: "- [x] Done task\n- [ ] Pending task",
+			name: "Tiptap task list checked and unchecked",
+			input: `<ul class="not-prose pl-2 space-y-2" data-type="taskList">
+  <li class="relative" data-checked="false" data-type="taskItem">
+    <label><input type="checkbox"><span></span></label>
+    <div><p class="editor-paragraph-block">Build the converter</p></div>
+  </li>
+  <li class="relative" data-checked="true" data-type="taskItem">
+    <label><input type="checkbox" checked="checked"><span></span></label>
+    <div><p class="editor-paragraph-block">Write tests</p></div>
+  </li>
+</ul>`,
+			expected: "- [ ] Build the converter\n- [x] Write tests",
 		},
 		{
 			name:     "Regular ul unaffected by tasklist renderer",

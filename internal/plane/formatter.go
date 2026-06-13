@@ -36,9 +36,14 @@ func getConverter() *converter.Converter {
 		)
 		// Register a custom renderer for Tiptap task lists.
 		// Plane's rich text editor emits:
-		//   <ul data-type="taskList"><li data-type="taskItem" data-checked="true|false">…</li></ul>
-		// We convert these to GFM-style checklist markdown: - [x] / - [ ]
-		// Use PriorityFirst so this runs before commonmark's list renderer.
+		//   <ul data-type="taskList"><li data-type="taskItem" data-checked="true|false">
+		//     <label><input type="checkbox"><span></span></label>
+		//     <div><p>…</p></div>
+		//   </li></ul>
+		// We use PriorityEarly so this runs before commonmark's list renderer.
+		// We extract text inline via dom.CollectText (which skips the <label>/<input>
+		// and flattens block boundaries) to produce valid GFM on a single line:
+		//   - [x] Done task  (not - [x]\n\nDone task)
 		c.Register.Renderer(func(ctx converter.Context, w converter.Writer, n *html.Node) converter.RenderStatus {
 			if dom.NodeName(n) == "ul" {
 				if attr, ok := dom.GetAttribute(n, "data-type"); ok && attr == "taskList" {
@@ -55,7 +60,7 @@ func getConverter() *converter.Converter {
 								w.WriteString(" ")
 							}
 							w.WriteString("] ")
-							ctx.RenderChildNodes(ctx, w, child)
+							w.WriteString(strings.TrimSpace(dom.CollectText(child)))
 							w.WriteString("\n")
 						}
 					}
