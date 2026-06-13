@@ -37,6 +37,9 @@ type Resolver struct {
 	membersByName  map[string]*Member
 	membersByEmail map[string]*Member
 
+	callerID string // cached once; empty means not yet fetched
+	callerMu sync.Mutex
+
 	mu sync.RWMutex
 }
 
@@ -174,6 +177,22 @@ func (r *Resolver) fetchMembers(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// GetCallerID returns the UUID of the workspace member whose API key is in use.
+// Result is cached after the first call.
+func (r *Resolver) GetCallerID(ctx context.Context) (string, error) {
+	r.callerMu.Lock()
+	defer r.callerMu.Unlock()
+	if r.callerID != "" {
+		return r.callerID, nil
+	}
+	me, err := r.client.GetMe(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to identify caller: %w", err)
+	}
+	r.callerID = me.ID
+	return r.callerID, nil
 }
 
 // ResolveProject resolves a project by name, identifier prefix, or UUID.
