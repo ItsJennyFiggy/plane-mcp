@@ -37,13 +37,8 @@ func stripHTML(htmlStr string) string {
 	return strings.TrimSpace(buf.String())
 }
 
-// FormatWorkItemYAML serializes a work item to a compact YAML string based on the detail level.
-func FormatWorkItemYAML(ctx context.Context, item *WorkItem, resolver *Resolver, detail string) (string, error) {
-	resolved, err := resolver.ResolveWorkItem(ctx, item)
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve work item: %w", err)
-	}
-
+// buildWorkItemMap extracts the fields of a work item into a serializable map based on detail level.
+func buildWorkItemMap(item *WorkItem, resolved *ResolvedWorkItem, detail string) map[string]interface{} {
 	m := make(map[string]interface{})
 
 	identifier := resolved.ID
@@ -102,6 +97,18 @@ func FormatWorkItemYAML(ctx context.Context, item *WorkItem, resolver *Resolver,
 			m["is_draft"] = resolved.IsDraft
 		}
 	}
+	return m
+}
+
+// FormatWorkItemYAML serializes a work item to a compact YAML string based on the detail level.
+// Unrecognized detail values silently default to summary mode.
+func FormatWorkItemYAML(ctx context.Context, item *WorkItem, resolver *Resolver, detail string) (string, error) {
+	resolved, err := resolver.ResolveWorkItem(ctx, item)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve work item: %w", err)
+	}
+
+	m := buildWorkItemMap(item, resolved, detail)
 
 	d, err := yaml.Marshal(m)
 	if err != nil {
@@ -112,6 +119,7 @@ func FormatWorkItemYAML(ctx context.Context, item *WorkItem, resolver *Resolver,
 }
 
 // FormatWorkItemsYAML serializes a slice of work items to a compact YAML string based on the detail level.
+// Unrecognized detail values silently default to summary mode.
 func FormatWorkItemsYAML(ctx context.Context, items []WorkItem, resolver *Resolver, detail string) (string, error) {
 	var list []map[string]interface{}
 	for i := range items {
@@ -120,64 +128,7 @@ func FormatWorkItemsYAML(ctx context.Context, items []WorkItem, resolver *Resolv
 			return "", fmt.Errorf("failed to resolve work item at index %d: %w", i, err)
 		}
 
-		m := make(map[string]interface{})
-		identifier := items[i].ID
-		if resolved.ProjectIdentifier != "" && resolved.SequenceID > 0 {
-			identifier = fmt.Sprintf("%s-%d", resolved.ProjectIdentifier, resolved.SequenceID)
-		}
-		m["identifier"] = identifier
-		m["name"] = resolved.Name
-
-		if resolved.StateName != "" {
-			m["state"] = resolved.StateName
-		}
-		if len(resolved.AssigneeNames) > 0 {
-			m["assignees"] = resolved.AssigneeNames
-		}
-		if resolved.Priority != "" && resolved.Priority != "none" {
-			m["priority"] = resolved.Priority
-		}
-
-		if strings.ToLower(detail) == "full" {
-			var desc string
-			if resolved.DescriptionHTML != "" {
-				desc = ConvertHTMLToMarkdown(resolved.DescriptionHTML)
-			} else if resolved.DescriptionStripped != "" {
-				desc = resolved.DescriptionStripped
-			}
-			if desc != "" {
-				m["description"] = desc
-			}
-
-			if len(resolved.LabelNames) > 0 {
-				m["labels"] = resolved.LabelNames
-			}
-			if resolved.StartDate != "" {
-				m["start_date"] = resolved.StartDate
-			}
-			if resolved.TargetDate != "" {
-				m["target_date"] = resolved.TargetDate
-			}
-			if resolved.CompletedAt != "" {
-				m["completed_at"] = resolved.CompletedAt
-			}
-			if resolved.ArchivedAt != "" {
-				m["archived_at"] = resolved.ArchivedAt
-			}
-			if items[i].Parent != nil && *items[i].Parent != "" {
-				m["parent"] = *items[i].Parent
-			}
-			if items[i].EstimatePoint != nil {
-				m["estimate_point"] = *items[i].EstimatePoint
-			}
-			if items[i].Type != nil && *items[i].Type != "" {
-				m["type"] = *items[i].Type
-			}
-			if resolved.IsDraft {
-				m["is_draft"] = resolved.IsDraft
-			}
-		}
-
+		m := buildWorkItemMap(&items[i], resolved, detail)
 		list = append(list, m)
 	}
 
