@@ -6,6 +6,8 @@ import (
 	"log"
 
 	"github.com/ItsJennyFiggy/plane-mcp/internal/config"
+	"github.com/ItsJennyFiggy/plane-mcp/internal/plane"
+	"github.com/ItsJennyFiggy/plane-mcp/internal/tools"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -16,6 +18,9 @@ func createServer() (*mcp.Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config error: %w", err)
 	}
+
+	planeClient := plane.NewClient(cfg)
+	resolver := plane.NewResolver(planeClient)
 
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "plane-mcp",
@@ -35,6 +40,8 @@ func createServer() (*mcp.Server, error) {
 			},
 		}, nil, nil
 	})
+
+	tools.Register(server, planeClient, resolver, cfg)
 
 	return server, nil
 }
