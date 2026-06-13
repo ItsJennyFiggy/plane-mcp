@@ -16,7 +16,7 @@ COPY . ./
 # Build the binary.
 # -ldflags="-w -s" reduces binary size.
 # CGO_ENABLED=0 builds a statically-linked binary.
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o server ./cmd/app
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o server ./cmd/plane-mcp
 
 # Run stage
 FROM gcr.io/distroless/static-debian12:nonroot
