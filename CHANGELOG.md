@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.0 (2026-06-13)
+
+
+### Features
+
+* **server:** implement Go MCP server skeleton with stdio transport and config parsing ([#2](https://github.com/ItsJennyFiggy/plane-mcp/issues/2)) ([5c1f2c8](https://github.com/ItsJennyFiggy/plane-mcp/commit/5c1f2c80ed0a6df88ced45b24b6db3206503b2e0))
+
 ## [1.0.1](https://github.com/ItsJennyFiggy/template-go/compare/v1.0.0...v1.0.1) (2026-06-11)
 
 
