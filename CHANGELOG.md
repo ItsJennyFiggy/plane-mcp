@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.4.1...v1.5.0) (2026-06-13)
+
+
+### Features
+
+* **formatter:** preserve table, strikethrough, and tasklist in work-item descriptions ([#14](https://github.com/ItsJennyFiggy/plane-mcp/issues/14)) ([0d2fe7b](https://github.com/ItsJennyFiggy/plane-mcp/commit/0d2fe7b3b08dd4d1a2bd83c4d3e055501b7c0ee8))
+
 ## [1.4.1](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.4.0...v1.4.1) (2026-06-13)
 
 
