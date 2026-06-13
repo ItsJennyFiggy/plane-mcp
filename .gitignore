@@ -65,6 +65,7 @@ env/
 *.test
 *.out
 bin/
+app
 # Exception: agent scripts are not build artifacts
 !.agents/bin/
 

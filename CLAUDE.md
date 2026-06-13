@@ -1,4 +1,4 @@
-# template-go
+# plane-mcp
 
 @.agents/rules/git_safety.md
 @.agents/rules/dependency_management.md
@@ -15,5 +15,5 @@ Read these before acting on the topic. Do not load preemptively.
 | Starting a task, committing, opening PRs | `.agents/workflows/git-workflow.md` |
 | Setting up local environment | `.agents/workflows/bootstrap.md` |
 | Auditing packages, upgrading dependencies | `.agents/skills/dependency-auditor/SKILL.md` |
-| Task tracking, updating ticket status on Vikunja | `.agents/workflows/vikunja.md` |
+| Task tracking, updating ticket status on Plane | `.agents/workflows/plane.md` |
 

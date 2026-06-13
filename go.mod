@@ -1,3 +1,3 @@
-module github.com/ItsJennyFiggy/template-go
+module github.com/ItsJennyFiggy/plane-mcp
 
 go 1.26
