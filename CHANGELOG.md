@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.4.0...v1.4.1) (2026-06-13)
+
+
+### Bug Fixes
+
+* **plane:** use /api/v1/users/me/ instead of workspace-scoped /me/ endpoint ([#12](https://github.com/ItsJennyFiggy/plane-mcp/issues/12)) ([d3148aa](https://github.com/ItsJennyFiggy/plane-mcp/commit/d3148aac62dc03f2cec7fa14ec4176f48c7f8325))
+
 ## [1.4.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.3.0...v1.4.0) (2026-06-13)
 
 
