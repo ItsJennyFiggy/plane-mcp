@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.1.0...v1.2.0) (2026-06-13)
+
+
+### Features
+
+* implement token-efficient output contract (AGENT-9) ([#6](https://github.com/ItsJennyFiggy/plane-mcp/issues/6)) ([4571872](https://github.com/ItsJennyFiggy/plane-mcp/commit/45718728ddc04f9b41cbd7ea8b7c387a80e1293b))
+
 ## [1.1.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.0.0...v1.1.0) (2026-06-13)
 
 
