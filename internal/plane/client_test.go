@@ -328,7 +328,7 @@ func TestClientGetMe(t *testing.T) {
 		// Arrange
 		client := NewClient(cfg)
 		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
-			expectedPath := "/api/v1/workspaces/test-workspace/me/"
+			expectedPath := "/api/v1/users/me/"
 			if req.URL.Path != expectedPath {
 				t.Errorf("expected path '%s', got '%s'", expectedPath, req.URL.Path)
 			}
