@@ -74,3 +74,10 @@ target/
 
 # Agent-specific CLI caches
 .antigravitycli/
+
+# Agent/analysis tooling
+.claude/
+.codegraph/
+.reasonix/
+graphify-out/
+reasonix.toml

@@ -4,17 +4,83 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
-	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
+	"github.com/JohannesKaufmann/dom"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/converter"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/base"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/commonmark"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/strikethrough"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/table"
+	"golang.org/x/net/html"
 	"gopkg.in/yaml.v3"
 )
 
-// ConvertHTMLToMarkdown converts HTML to markdown, falling back to stripping HTML tags on error.
+// converterCache provides a lazily-initialized, concurrency-safe singleton for the
+// HTML-to-Markdown converter instance. Building the converter (importing plugins) is
+// moderately expensive, so we only do it once.
+var (
+	convOnce sync.Once
+	conv     *converter.Converter
+)
+
+func getConverter() *converter.Converter {
+	convOnce.Do(func() {
+		c := converter.NewConverter(
+			converter.WithPlugins(
+				base.NewBasePlugin(),
+				commonmark.NewCommonmarkPlugin(),
+				strikethrough.NewStrikethroughPlugin(),
+				table.NewTablePlugin(),
+			),
+		)
+		// Register a custom renderer for Tiptap task lists.
+		// Plane's rich text editor emits:
+		//   <ul data-type="taskList"><li data-type="taskItem" data-checked="true|false">
+		//     <label><input type="checkbox"><span></span></label>
+		//     <div><p>…</p></div>
+		//   </li></ul>
+		// We use PriorityEarly so this runs before commonmark's list renderer.
+		// We extract text inline via dom.CollectText (which skips the <label>/<input>
+		// and flattens block boundaries) to produce valid GFM on a single line:
+		//   - [x] Done task  (not - [x]\n\nDone task)
+		c.Register.Renderer(func(ctx converter.Context, w converter.Writer, n *html.Node) converter.RenderStatus {
+			if dom.NodeName(n) == "ul" {
+				if attr, ok := dom.GetAttribute(n, "data-type"); ok && attr == "taskList" {
+					for child := n.FirstChild; child != nil; child = child.NextSibling {
+						if child.Type == html.ElementNode && dom.NodeName(child) == "li" {
+							checked := false
+							if val, ok := dom.GetAttribute(child, "data-checked"); ok && val == "true" {
+								checked = true
+							}
+							w.WriteString("- [")
+							if checked {
+								w.WriteString("x")
+							} else {
+								w.WriteString(" ")
+							}
+							w.WriteString("] ")
+							w.WriteString(strings.TrimSpace(dom.CollectText(child)))
+							w.WriteString("\n")
+						}
+					}
+					return converter.RenderSuccess
+				}
+			}
+			return converter.RenderTryNext
+		}, converter.PriorityEarly)
+		conv = c
+	})
+	return conv
+}
+
+// ConvertHTMLToMarkdown converts HTML to markdown using the configured plugins
+// (table, strikethrough, tasklist), falling back to stripping HTML tags on error.
 func ConvertHTMLToMarkdown(htmlStr string) string {
 	if htmlStr == "" {
 		return ""
 	}
-	markdown, err := htmltomarkdown.ConvertString(htmlStr)
+	markdown, err := getConverter().ConvertString(htmlStr)
 	if err != nil {
 		return stripHTML(htmlStr)
 	}
