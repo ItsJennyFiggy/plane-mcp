@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.2.0...v1.3.0) (2026-06-13)
+
+
+### Features
+
+* **plane:** add 6 new client methods and GetCallerID resolver (AGENT-10) ([#8](https://github.com/ItsJennyFiggy/plane-mcp/issues/8)) ([0fd16f9](https://github.com/ItsJennyFiggy/plane-mcp/commit/0fd16f9832407930d6428fedd876e998d3d73d9f))
+
 ## [1.2.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.1.0...v1.2.0) (2026-06-13)
 
 
