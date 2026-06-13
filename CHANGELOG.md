@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.0.0...v1.1.0) (2026-06-13)
+
+
+### Features
+
+* **plane:** implement REST client, auth, and Name-UUID resolver ([#4](https://github.com/ItsJennyFiggy/plane-mcp/issues/4)) ([0b6d8b2](https://github.com/ItsJennyFiggy/plane-mcp/commit/0b6d8b23633aa9fdce8fe80e33d629056acd74b9))
+
 ## 1.0.0 (2026-06-13)
 
 
