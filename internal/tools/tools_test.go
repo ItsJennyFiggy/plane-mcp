@@ -11,6 +11,7 @@ import (
 	"github.com/ItsJennyFiggy/plane-mcp/internal/plane"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"gopkg.in/yaml.v3"
 )
 
 // ---------------------------------------------------------------------------
@@ -2226,11 +2227,66 @@ func TestListLabels_Success(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *mcp.TextContent, got %T", result.Content[0])
 	}
-	if !strings.Contains(tc.Text, "name: bug") || !strings.Contains(tc.Text, "color: #ff0000") {
+	if !strings.Contains(tc.Text, `name: "bug"`) || !strings.Contains(tc.Text, `color: "#ff0000"`) {
 		t.Errorf("expected label details in output, got: %q", tc.Text)
 	}
-	if !strings.Contains(tc.Text, "name: feature") || !strings.Contains(tc.Text, "color: #00ff00") {
+	if !strings.Contains(tc.Text, `name: "feature"`) || !strings.Contains(tc.Text, `color: "#00ff00"`) {
 		t.Errorf("expected second label details in output, got: %q", tc.Text)
+	}
+}
+
+// TestListLabels_YAMLRoundTrip — output must be parseable as valid YAML.
+func TestListLabels_YAMLRoundTrip(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	labels := []plane.Label{
+		{ID: "lbl-1", Name: "bug", Color: "#ff0000"},
+		{ID: "lbl-2", Name: "feature", Color: "#00ff00"},
+		{ID: "lbl-3", Name: "role:executor", Color: "#0000ff"},
+	}
+	client := &mockClient{
+		listLabelsFn: func(ctx context.Context, projectID string) ([]plane.Label, error) {
+			return labels, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid"}, nil
+		},
+	}
+	args := ListLabelsArgs{Project: "Test"}
+
+	// Act
+	result, err := listLabels(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected IsError=false: %+v", result.Content)
+	}
+
+	tc := result.Content[0].(*mcp.TextContent)
+
+	// Parse as YAML — must succeed.
+	var parsed []map[string]string
+	if err := yaml.Unmarshal([]byte(tc.Text), &parsed); err != nil {
+		t.Fatalf("output is not valid YAML: %v\noutput:\n%s", err, tc.Text)
+	}
+
+	if len(parsed) != 3 {
+		t.Fatalf("expected 3 labels, got %d", len(parsed))
+	}
+	if parsed[0]["name"] != "bug" || parsed[0]["color"] != "#ff0000" {
+		t.Errorf("first label: got name=%q color=%q", parsed[0]["name"], parsed[0]["color"])
+	}
+	if parsed[1]["name"] != "feature" || parsed[1]["color"] != "#00ff00" {
+		t.Errorf("second label: got name=%q color=%q", parsed[1]["name"], parsed[1]["color"])
+	}
+	// Label with colon in name must survive quoting.
+	if parsed[2]["name"] != "role:executor" || parsed[2]["color"] != "#0000ff" {
+		t.Errorf("third label: got name=%q color=%q", parsed[2]["name"], parsed[2]["color"])
 	}
 }
 

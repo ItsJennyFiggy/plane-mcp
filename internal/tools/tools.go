@@ -688,7 +688,7 @@ func listLabels(ctx context.Context, args ListLabelsArgs, client planeClient, re
 
 	var b strings.Builder
 	for _, lbl := range labels {
-		fmt.Fprintf(&b, "- name: %s\n  color: %s\n", lbl.Name, lbl.Color)
+		fmt.Fprintf(&b, "- name: %q\n  color: %q\n", lbl.Name, lbl.Color)
 	}
 
 	return toolText(b.String()), nil
