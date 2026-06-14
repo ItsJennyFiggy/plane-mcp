@@ -1839,7 +1839,7 @@ func TestCreateTask_EmptyModuleSkipsResolution(t *testing.T) {
 }
 
 // TestCreateTask_ModuleAssigneesAndLabelsTogether — when all three optional fields are set,
-// body["assignees"] and body["label_ids"] must be populated AND AddWorkItemsToModule must
+// body["assignees"] and body["labels"] must be populated AND AddWorkItemsToModule must
 // be called with the resolved module ID and the new work-item ID.
 func TestCreateTask_ModuleAssigneesAndLabelsTogether(t *testing.T) {
 	// Arrange
@@ -1901,10 +1901,10 @@ func TestCreateTask_ModuleAssigneesAndLabelsTogether(t *testing.T) {
 	if !ok || len(assignees) != 1 || assignees[0] != "member-combo" {
 		t.Errorf("body[\"assignees\"] = %v, want [member-combo]", capturedBody["assignees"])
 	}
-	// body["label_ids"] must be set
-	labelIDs, ok := capturedBody["label_ids"].([]string)
+	// body["labels"] must be set
+	labelIDs, ok := capturedBody["labels"].([]string)
 	if !ok || len(labelIDs) != 1 || labelIDs[0] != "label-combo" {
-		t.Errorf("body[\"label_ids\"] = %v, want [label-combo]", capturedBody["label_ids"])
+		t.Errorf("body[\"labels\"] = %v, want [label-combo]", capturedBody["labels"])
 	}
 	// AddWorkItemsToModule must have been called with the resolved IDs
 	if capturedModuleID != "mod-combo" {
@@ -2080,8 +2080,8 @@ func TestCreateTask_AssigneesLabelsOmitted(t *testing.T) {
 			if _, ok := body["assignees"]; ok {
 				t.Error("assignees should not be present in body when omitted")
 			}
-			if _, ok := body["label_ids"]; ok {
-				t.Error("label_ids should not be present in body when omitted")
+			if _, ok := body["labels"]; ok {
+				t.Error("labels should not be present in body when omitted")
 			}
 			return created, nil
 		},

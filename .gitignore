@@ -81,3 +81,4 @@ target/
 .reasonix/
 graphify-out/
 reasonix.toml
+/plane-mcp
