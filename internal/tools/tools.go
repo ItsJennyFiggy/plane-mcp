@@ -1,7 +1,9 @@
 package tools
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"regexp"
@@ -346,15 +348,75 @@ type SubmitForReviewArgs struct {
 	Comment    string `json:"comment"`
 }
 
+// FlexibleStringSlice is a []string that unmarshals from either a JSON array
+// or a JSON string containing a JSON-encoded array (or a comma-separated
+// list). This makes MCP tools robust against clients that serialise array
+// arguments as strings.
+type FlexibleStringSlice []string
+
+// UnmarshalJSON implements json.Unmarshaler so FlexibleStringSlice accepts:
+//   - a JSON array: ["a", "b"]
+//   - a JSON string containing an array: "[\"a\", \"b\"]"
+//   - a JSON string containing a comma-separated list: "a, b"
+//   - null / empty string → empty slice
+func (s *FlexibleStringSlice) UnmarshalJSON(data []byte) error {
+	// 1. Trim whitespace and try as a JSON array first.
+	d := bytes.TrimSpace(data)
+	if len(d) > 0 && d[0] == '[' {
+		var arr []string
+		if err := json.Unmarshal(d, &arr); err != nil {
+			return err
+		}
+		*s = FlexibleStringSlice(arr)
+		return nil
+	}
+
+	// 2. Try as a JSON string.
+	var raw string
+	if err := json.Unmarshal(d, &raw); err != nil {
+		// If it's not a valid JSON value at all, treat as empty.
+		*s = nil
+		return nil
+	}
+
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		*s = nil
+		return nil
+	}
+
+	// 3. If the string starts with '[', treat it as a JSON-encoded array.
+	if len(raw) > 0 && raw[0] == '[' {
+		var arr []string
+		if err := json.Unmarshal([]byte(raw), &arr); err != nil {
+			return err
+		}
+		*s = FlexibleStringSlice(arr)
+		return nil
+	}
+
+	// 4. Otherwise, comma-split.
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	*s = FlexibleStringSlice(out)
+	return nil
+}
+
 // CreateTaskArgs are the arguments for the create_task tool.
 type CreateTaskArgs struct {
-	Project     string   `json:"project"`
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Priority    string   `json:"priority"`
-	Assignees   []string `json:"assignees"`
-	Labels      []string `json:"labels"`
-	Module      string   `json:"module"`
+	Project     string              `json:"project"`
+	Name        string              `json:"name"`
+	Description string              `json:"description"`
+	Priority    string              `json:"priority"`
+	Assignees   FlexibleStringSlice `json:"assignees,omitempty"`
+	Labels      FlexibleStringSlice `json:"labels,omitempty"`
+	Module      string              `json:"module,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

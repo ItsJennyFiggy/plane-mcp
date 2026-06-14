@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -1367,8 +1368,8 @@ func TestCreateTask_WithAssigneesAndLabels(t *testing.T) {
 	args := CreateTaskArgs{
 		Project:   "My Project",
 		Name:      "Tagged Task",
-		Assignees: []string{"good-user", "bad-user"}, // bad-user skipped
-		Labels:    []string{"bug", "missing-label"},  // missing-label skipped
+		Assignees: FlexibleStringSlice{"good-user", "bad-user"}, // bad-user skipped
+		Labels:    FlexibleStringSlice{"bug", "missing-label"},  // missing-label skipped
 	}
 
 	// Act
@@ -1880,8 +1881,8 @@ func TestCreateTask_ModuleAssigneesAndLabelsTogether(t *testing.T) {
 		Project:   "P",
 		Name:      "Combo Task",
 		Module:    "Sprint Combo",
-		Assignees: []string{"alice"},
-		Labels:    []string{"feature"},
+		Assignees: FlexibleStringSlice{"alice"},
+		Labels:    FlexibleStringSlice{"feature"},
 	}
 
 	// Act
@@ -1974,5 +1975,137 @@ func TestCreateTask_ModuleAndDescriptionTogether(t *testing.T) {
 	}
 	if len(capturedWorkItemIDs) != 1 || capturedWorkItemIDs[0] != "wi-moddesc" {
 		t.Errorf("AddWorkItemsToModule workItemIDs=%v, want [wi-moddesc]", capturedWorkItemIDs)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestFlexibleStringSlice_UnmarshalJSON — verifies the custom unmarshaler
+// accepts JSON arrays, stringified JSON arrays, comma-separated strings,
+// and edge cases (null / empty).
+// ---------------------------------------------------------------------------
+
+func TestFlexibleStringSlice_UnmarshalJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+		want []string
+	}{
+		{
+			name: "JSON array",
+			json: `["alice", "bob"]`,
+			want: []string{"alice", "bob"},
+		},
+		{
+			name: "empty JSON array",
+			json: `[]`,
+			want: []string{},
+		},
+		{
+			name: "stringified JSON array",
+			json: `"[\"uuid-1\", \"uuid-2\"]"`,
+			want: []string{"uuid-1", "uuid-2"},
+		},
+		{
+			name: "comma-separated string",
+			json: `"alice, bob, charlie"`,
+			want: []string{"alice", "bob", "charlie"},
+		},
+		{
+			name: "comma-separated string no spaces",
+			json: `"alice,bob"`,
+			want: []string{"alice", "bob"},
+		},
+		{
+			name: "single value string",
+			json: `"just-me"`,
+			want: []string{"just-me"},
+		},
+		{
+			name: "null",
+			json: `null`,
+			want: nil,
+		},
+		{
+			name: "empty string",
+			json: `""`,
+			want: nil,
+		},
+		{
+			name: "stringified empty array",
+			json: `"[]"`,
+			want: []string{},
+		},
+		{
+			name: "comma-separated with empty parts",
+			json: `"alice, , bob"`,
+			want: []string{"alice", "bob"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var s FlexibleStringSlice
+			err := json.Unmarshal([]byte(tt.json), &s)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.want == nil {
+				if s != nil {
+					t.Errorf("expected nil, got %v", []string(s))
+				}
+				return
+			}
+			if len(s) != len(tt.want) {
+				t.Fatalf("len mismatch: got %d, want %d (%v)", len(s), len(tt.want), []string(s))
+			}
+			for i := range s {
+				if s[i] != tt.want[i] {
+					t.Errorf("index %d: got %q, want %q", i, s[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestCreateTask_AssigneesLabelsOmitted — create_task succeeds without
+// assignees or labels (regression test for Problem 1: required fields).
+func TestCreateTask_AssigneesLabelsOmitted(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	created := &plane.WorkItem{ID: "wi-omit", Name: "Minimal Task", SequenceID: 25}
+	client := &mockClient{
+		createWorkItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error) {
+			// Verify assignees and labels are NOT in the body.
+			if _, ok := body["assignees"]; ok {
+				t.Error("assignees should not be present in body when omitted")
+			}
+			if _, ok := body["label_ids"]; ok {
+				t.Error("label_ids should not be present in body when omitted")
+			}
+			return created, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "My Project"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: Minimal Task\n", nil
+		},
+	}
+	// Explicitly zero-value for Assignees and Labels.
+	args := CreateTaskArgs{Project: "My Project", Name: "Minimal Task"}
+
+	// Act
+	result, err := createTask(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
 	}
 }
