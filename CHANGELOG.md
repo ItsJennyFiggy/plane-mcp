@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.1](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.6.0...v1.6.1) (2026-06-14)
+
+
+### Bug Fixes
+
+* **create_task:** make assignees/labels optional and accept stringified arrays ([#19](https://github.com/ItsJennyFiggy/plane-mcp/issues/19)) ([fdffd36](https://github.com/ItsJennyFiggy/plane-mcp/commit/fdffd368e245dee885a921265bdfb499e6ad1983))
+
 ## [1.6.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.5.0...v1.6.0) (2026-06-14)
 
 
