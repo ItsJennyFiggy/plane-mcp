@@ -241,6 +241,92 @@ func TestConvertDescriptionToHTML(t *testing.T) {
 			input: "Para one\n\n\n\nPara two",
 			want:  "<p>Para one</p><p>Para two</p>",
 		},
+		{
+			name:  "h1 heading",
+			input: "# Title",
+			want:  `<h1 class="editor-heading-block">Title</h1>`,
+		},
+		{
+			name:  "h3 heading",
+			input: "### Subsection",
+			want:  `<h3 class="editor-heading-block">Subsection</h3>`,
+		},
+		{
+			name:  "h6 heading is max level",
+			input: "###### Deep",
+			want:  `<h6 class="editor-heading-block">Deep</h6>`,
+		},
+		{
+			name:  "seven hashes is not a heading",
+			input: "####### NotHeading",
+			want:  "<p>####### NotHeading</p>",
+		},
+		{
+			name:  "unordered list",
+			input: "- one\n- two",
+			want:  "<ul><li>one</li><li>two</li></ul>",
+		},
+		{
+			name:  "unordered list with asterisks",
+			input: "* alpha\n* beta",
+			want:  "<ul><li>alpha</li><li>beta</li></ul>",
+		},
+		{
+			name:  "ordered list",
+			input: "1. first\n2. second",
+			want:  "<ol><li>first</li><li>second</li></ol>",
+		},
+		{
+			// Regression from AGENT-19: a numbered list must become <ol><li>, not literal "1\. ".
+			name:  "single ordered item regression",
+			input: "1. Item text",
+			want:  "<ol><li>Item text</li></ol>",
+		},
+		{
+			name:  "task list with checked and unchecked",
+			input: "- [ ] todo\n- [x] done",
+			want:  `<ul class="task-list"><li data-checked="false">todo</li><li data-checked="true">done</li></ul>`,
+		},
+		{
+			name:  "fenced code block is not inline-processed",
+			input: "```\nprint(\"**hi**\")\n```",
+			want:  "<pre><code>print(\"**hi**\")</code></pre>",
+		},
+		{
+			name:  "multi-line fenced code block",
+			input: "```\nline one\nline two\n```",
+			want:  "<pre><code>line one\nline two</code></pre>",
+		},
+		{
+			name:  "blockquote",
+			input: "> This is a quote",
+			want:  "<blockquote><p>This is a quote</p></blockquote>",
+		},
+		{
+			name:  "horizontal rule",
+			input: "---",
+			want:  "<hr>",
+		},
+		{
+			name:  "inline bold italic and code",
+			input: "This is **bold** and *italic* and `code`",
+			want:  "<p>This is <strong>bold</strong> and <em>italic</em> and <code>code</code></p>",
+		},
+		{
+			name:  "html special characters are escaped",
+			input: "a < b & c > d",
+			want:  "<p>a &lt; b &amp; c &gt; d</p>",
+		},
+		{
+			name:  "mixed document",
+			input: "# Heading\n\nSome intro text\n\n- bullet a\n- bullet b\n\n> a quote",
+			want:  `<h1 class="editor-heading-block">Heading</h1><p>Some intro text</p><ul><li>bullet a</li><li>bullet b</li></ul><blockquote><p>a quote</p></blockquote>`,
+		},
+		{
+			name:  "paragraph wrapping lines join with space",
+			input: "line one\nline two",
+			want:  "<p>line one line two</p>",
+		},
 	}
 
 	for _, tc := range tests {

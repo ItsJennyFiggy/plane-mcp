@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -130,21 +131,187 @@ func toolText(text string) *mcp.CallToolResult {
 	}
 }
 
-// convertDescriptionToHTML converts a markdown description to a simple HTML representation.
-// It wraps each double-newline-separated paragraph in <p> tags.
+// Inline-span and list-item patterns used by the Markdown converter.
+var (
+	inlineCodeRe  = regexp.MustCompile("`([^`]+)`")
+	boldRe        = regexp.MustCompile(`\*\*([^*]+)\*\*`)
+	italicRe      = regexp.MustCompile(`\*([^*]+)\*`)
+	taskItemRe    = regexp.MustCompile(`^[-*]\s+\[([ xX])\]\s*(.*)$`)
+	orderedItemRe = regexp.MustCompile(`^\d+\.\s+(.*)$`)
+)
+
+// escapeHTML escapes the minimal set of HTML-significant characters so user text
+// cannot inject markup. Quotes/apostrophes are intentionally left intact to keep
+// the converted output readable.
+func escapeHTML(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
+}
+
+// convertInline escapes a span of text and applies inline Markdown emphasis:
+// inline code, then bold, then italic (bold before italic so `**x**` is not
+// mis-parsed as nested italics).
+func convertInline(s string) string {
+	s = escapeHTML(s)
+	s = inlineCodeRe.ReplaceAllString(s, "<code>$1</code>")
+	s = boldRe.ReplaceAllString(s, "<strong>$1</strong>")
+	s = italicRe.ReplaceAllString(s, "<em>$1</em>")
+	return s
+}
+
+// headingLevel returns the heading level (1–6) if the line is an ATX heading
+// (`# ` … `###### `), or 0 otherwise. A space must follow the hashes.
+func headingLevel(t string) int {
+	n := 0
+	for n < len(t) && t[n] == '#' {
+		n++
+	}
+	if n >= 1 && n <= 6 && n < len(t) && t[n] == ' ' {
+		return n
+	}
+	return 0
+}
+
+func isUnorderedItem(t string) bool {
+	return strings.HasPrefix(t, "- ") || strings.HasPrefix(t, "* ")
+}
+
+func isOrderedItem(t string) bool { return orderedItemRe.MatchString(t) }
+
+func isTaskItem(t string) bool { return taskItemRe.MatchString(t) }
+
+func isHorizontalRule(t string) bool {
+	return t == "---" || t == "***" || t == "___"
+}
+
+// isBlockStart reports whether a trimmed line begins a non-paragraph block, used
+// to terminate paragraph accumulation.
+func isBlockStart(t string) bool {
+	return headingLevel(t) > 0 ||
+		strings.HasPrefix(t, "```") ||
+		isHorizontalRule(t) ||
+		strings.HasPrefix(t, ">") ||
+		isOrderedItem(t) ||
+		isTaskItem(t) ||
+		isUnorderedItem(t)
+}
+
+// convertDescriptionToHTML converts a Markdown description into Plane-native
+// editor HTML. It is a line-based block parser supporting headings, ordered /
+// unordered / task lists, fenced code blocks, blockquotes, horizontal rules, and
+// paragraphs, with inline bold/italic/code spans. Block types outside this set
+// (tables, callouts, links, etc.) degrade to plain paragraphs.
 func convertDescriptionToHTML(desc string) string {
 	if desc == "" {
 		return ""
 	}
-	paragraphs := strings.Split(desc, "\n\n")
-	var parts []string
-	for _, p := range paragraphs {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			parts = append(parts, "<p>"+p+"</p>")
+
+	lines := strings.Split(desc, "\n")
+	var b strings.Builder
+	i := 0
+
+	for i < len(lines) {
+		trimmed := strings.TrimSpace(lines[i])
+
+		switch {
+		case trimmed == "":
+			i++
+
+		case strings.HasPrefix(trimmed, "```"):
+			// Fenced code block — collect verbatim until the closing fence.
+			i++
+			var code []string
+			for i < len(lines) && strings.TrimSpace(lines[i]) != "```" {
+				code = append(code, lines[i])
+				i++
+			}
+			if i < len(lines) {
+				i++ // consume closing fence
+			}
+			b.WriteString("<pre><code>")
+			b.WriteString(escapeHTML(strings.Join(code, "\n")))
+			b.WriteString("</code></pre>")
+
+		case isHorizontalRule(trimmed):
+			b.WriteString("<hr>")
+			i++
+
+		case headingLevel(trimmed) > 0:
+			level := headingLevel(trimmed)
+			content := strings.TrimSpace(trimmed[level:])
+			fmt.Fprintf(&b, `<h%d class="editor-heading-block">%s</h%d>`, level, convertInline(content), level)
+			i++
+
+		case strings.HasPrefix(trimmed, ">"):
+			var quote []string
+			for i < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[i]), ">") {
+				q := strings.TrimPrefix(strings.TrimSpace(lines[i]), ">")
+				quote = append(quote, strings.TrimSpace(q))
+				i++
+			}
+			b.WriteString("<blockquote><p>")
+			b.WriteString(convertInline(strings.Join(quote, " ")))
+			b.WriteString("</p></blockquote>")
+
+		case isTaskItem(trimmed):
+			b.WriteString(`<ul class="task-list">`)
+			for i < len(lines) && isTaskItem(strings.TrimSpace(lines[i])) {
+				m := taskItemRe.FindStringSubmatch(strings.TrimSpace(lines[i]))
+				checked := "false"
+				if m[1] == "x" || m[1] == "X" {
+					checked = "true"
+				}
+				fmt.Fprintf(&b, `<li data-checked="%s">%s</li>`, checked, convertInline(strings.TrimSpace(m[2])))
+				i++
+			}
+			b.WriteString("</ul>")
+
+		case isUnorderedItem(trimmed):
+			b.WriteString("<ul>")
+			for i < len(lines) {
+				t := strings.TrimSpace(lines[i])
+				if !isUnorderedItem(t) || isTaskItem(t) {
+					break
+				}
+				fmt.Fprintf(&b, "<li>%s</li>", convertInline(strings.TrimSpace(t[2:])))
+				i++
+			}
+			b.WriteString("</ul>")
+
+		case isOrderedItem(trimmed):
+			b.WriteString("<ol>")
+			for i < len(lines) {
+				t := strings.TrimSpace(lines[i])
+				if !isOrderedItem(t) {
+					break
+				}
+				m := orderedItemRe.FindStringSubmatch(t)
+				fmt.Fprintf(&b, "<li>%s</li>", convertInline(strings.TrimSpace(m[1])))
+				i++
+			}
+			b.WriteString("</ol>")
+
+		default:
+			// Paragraph — accumulate consecutive plain lines (joined with a space)
+			// until a blank line or the start of another block.
+			var para []string
+			for i < len(lines) {
+				t := strings.TrimSpace(lines[i])
+				if t == "" || isBlockStart(t) {
+					break
+				}
+				para = append(para, t)
+				i++
+			}
+			b.WriteString("<p>")
+			b.WriteString(convertInline(strings.Join(para, " ")))
+			b.WriteString("</p>")
 		}
 	}
-	return strings.Join(parts, "")
+
+	return b.String()
 }
 
 // ---------------------------------------------------------------------------
