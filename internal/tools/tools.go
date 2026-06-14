@@ -221,10 +221,12 @@ func convertDescriptionToHTML(desc string) string {
 
 		case strings.HasPrefix(trimmed, "```"):
 			// Fenced code block — collect verbatim until the closing fence.
+			// Trailing \r is stripped from each line so CRLF input does not
+			// leak a carriage-return into the rendered <pre><code> block.
 			i++
 			var code []string
 			for i < len(lines) && strings.TrimSpace(lines[i]) != "```" {
-				code = append(code, lines[i])
+				code = append(code, strings.TrimRight(lines[i], "\r"))
 				i++
 			}
 			if i < len(lines) {

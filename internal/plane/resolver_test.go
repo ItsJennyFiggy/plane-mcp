@@ -12,11 +12,11 @@ import (
 
 // Valid UUIDs to satisfy isUUID validation
 const (
-	projUUID1  = "11111111-1111-1111-1111-111111111111"
-	projUUID2  = "22222222-2222-2222-2222-222222222222"
-	stateUUID1 = "33333333-3333-3333-3333-333333333333"
-	stateUUID2 = "44444444-4444-4444-4444-444444444444"
-	stateUUID3 = "55555555-5555-5555-5555-555555555555"
+	projUUID1   = "11111111-1111-1111-1111-111111111111"
+	projUUID2   = "22222222-2222-2222-2222-222222222222"
+	stateUUID1  = "33333333-3333-3333-3333-333333333333"
+	stateUUID2  = "44444444-4444-4444-4444-444444444444"
+	stateUUID3  = "55555555-5555-5555-5555-555555555555"
 	labelUUID1  = "66666666-6666-6666-6666-666666666666"
 	labelUUID2  = "77777777-7777-7777-7777-777777777777"
 	userUUID1   = "88888888-8888-8888-8888-888888888888"
@@ -240,6 +240,75 @@ func TestResolverModuleResolution(t *testing.T) {
 	})
 }
 
+func TestResolverModuleFetchError(t *testing.T) {
+	// Arrange: fresh resolver with a transport that returns HTTP 500
+	cfg := &config.Config{
+		PlaneAPIKey:        "test-key",
+		PlaneBaseURL:       "https://plane.example.com",
+		PlaneWorkspaceSlug: "test-workspace",
+	}
+	client := NewClient(cfg)
+	resolver := NewResolver(client)
+
+	client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: 500,
+			Body:       io.NopCloser(strings.NewReader("internal server error")),
+		}, nil
+	})
+
+	// Act: cache-cold lookup; the fetch must fail
+	_, err := resolver.ResolveModule(context.Background(), projUUID1, "Anything")
+
+	// Assert: error wraps "failed to fetch modules for cache"
+	if err == nil {
+		t.Fatal("expected error on fetch failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to fetch modules for cache") {
+		t.Errorf("expected error to contain 'failed to fetch modules for cache', got: %v", err)
+	}
+}
+
+func TestResolverModuleCacheColdUUIDLookup(t *testing.T) {
+	// Arrange: fresh resolver (empty cache) with a normal module list response
+	cfg := &config.Config{
+		PlaneAPIKey:        "test-key",
+		PlaneBaseURL:       "https://plane.example.com",
+		PlaneWorkspaceSlug: "test-workspace",
+	}
+	client := NewClient(cfg)
+	resolver := NewResolver(client)
+
+	client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+		body := `[
+			{"id": "` + moduleUUID1 + `", "name": "Sprint One"},
+			{"id": "` + moduleUUID2 + `", "name": "Sprint Two"}
+		]`
+		return &http.Response{
+			StatusCode: 200,
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})
+
+	// Act: first call is cache-cold, uses a UUID as input (exercises the UUID branch
+	// when the project key is initially absent from the modulesByID map)
+	m, err := resolver.ResolveModule(context.Background(), projUUID1, moduleUUID1)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("expected successful UUID resolution, got error: %v", err)
+	}
+	if m == nil {
+		t.Fatal("expected non-nil module, got nil")
+	}
+	if m.ID != moduleUUID1 {
+		t.Errorf("expected module ID '%s', got '%s'", moduleUUID1, m.ID)
+	}
+	if m.Name != "Sprint One" {
+		t.Errorf("expected module name 'Sprint One', got '%s'", m.Name)
+	}
+}
+
 func TestResolverMemberResolution(t *testing.T) {
 	cfg := &config.Config{
 		PlaneAPIKey:        "test-key",
@@ -438,6 +507,13 @@ func TestResolverFailures(t *testing.T) {
 		}
 		if _, err := resolver.ResolveMember(context.Background(), ""); err == nil {
 			t.Error("expected error on empty member name")
+		}
+		// Module empty-input guard
+		_, err := resolver.ResolveModule(context.Background(), projUUID1, "")
+		if err == nil {
+			t.Error("expected error on empty module name")
+		} else if err.Error() != "module input cannot be empty" {
+			t.Errorf("expected error 'module input cannot be empty', got '%v'", err)
 		}
 	})
 }

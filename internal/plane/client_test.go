@@ -865,4 +865,50 @@ func TestClientAddWorkItemsToModule(t *testing.T) {
 			t.Errorf("expected error message to mention 400, got: %v", err)
 		}
 	})
+
+	t.Run("Empty workItemIDs slice posts empty array not null", func(t *testing.T) {
+		// Arrange
+		client := NewClient(cfg)
+		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+			// Assert request path and method
+			expectedPath := "/api/v1/workspaces/test-workspace/projects/proj-1/modules/mod-1/module-issues/"
+			if req.URL.Path != expectedPath {
+				t.Errorf("expected path '%s', got '%s'", expectedPath, req.URL.Path)
+			}
+			if req.Method != "POST" {
+				t.Errorf("expected POST, got %s", req.Method)
+			}
+
+			// Assert body: "issues" must be an empty array (not null / missing)
+			var reqBody map[string]any
+			bodyBytes, _ := io.ReadAll(req.Body)
+			if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
+				t.Fatalf("failed to parse request body: %v", err)
+			}
+			rawIssues, exists := reqBody["issues"]
+			if !exists {
+				t.Fatal("expected 'issues' key in request body, but it was absent")
+			}
+			issues, ok := rawIssues.([]any)
+			if !ok {
+				t.Fatalf("expected 'issues' to be a JSON array, got %T: %v", rawIssues, rawIssues)
+			}
+			if len(issues) != 0 {
+				t.Errorf("expected empty issues array, got length %d: %v", len(issues), issues)
+			}
+
+			return &http.Response{
+				StatusCode: 201,
+				Body:       io.NopCloser(strings.NewReader(`{}`)),
+			}, nil
+		})
+
+		// Act
+		err := client.AddWorkItemsToModule(context.Background(), "proj-1", "mod-1", []string{})
+
+		// Assert
+		if err != nil {
+			t.Fatalf("AddWorkItemsToModule with empty slice failed: %v", err)
+		}
+	})
 }
