@@ -17,10 +17,12 @@ const (
 	stateUUID1 = "33333333-3333-3333-3333-333333333333"
 	stateUUID2 = "44444444-4444-4444-4444-444444444444"
 	stateUUID3 = "55555555-5555-5555-5555-555555555555"
-	labelUUID1 = "66666666-6666-6666-6666-666666666666"
-	labelUUID2 = "77777777-7777-7777-7777-777777777777"
-	userUUID1  = "88888888-8888-8888-8888-888888888888"
-	userUUID2  = "99999999-9999-9999-9999-999999999999"
+	labelUUID1  = "66666666-6666-6666-6666-666666666666"
+	labelUUID2  = "77777777-7777-7777-7777-777777777777"
+	userUUID1   = "88888888-8888-8888-8888-888888888888"
+	userUUID2   = "99999999-9999-9999-9999-999999999999"
+	moduleUUID1 = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	moduleUUID2 = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 )
 
 func TestResolverProjectResolution(t *testing.T) {
@@ -169,6 +171,71 @@ func TestResolverLabelResolution(t *testing.T) {
 		}
 		if l.ID != labelUUID1 {
 			t.Errorf("expected ID %s, got '%s'", labelUUID1, l.ID)
+		}
+	})
+}
+
+func TestResolverModuleResolution(t *testing.T) {
+	cfg := &config.Config{
+		PlaneAPIKey:        "test-key",
+		PlaneBaseURL:       "https://plane.example.com",
+		PlaneWorkspaceSlug: "test-workspace",
+	}
+	client := NewClient(cfg)
+	resolver := NewResolver(client)
+
+	requestCount := 0
+	client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+		requestCount++
+		body := `[
+			{"id": "` + moduleUUID1 + `", "name": "Sprint One"},
+			{"id": "` + moduleUUID2 + `", "name": "Sprint Two"}
+		]`
+		return &http.Response{
+			StatusCode: 200,
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})
+
+	t.Run("Resolve Module by Name Case-Insensitive", func(t *testing.T) {
+		m, err := resolver.ResolveModule(context.Background(), projUUID1, "sprint one")
+		if err != nil {
+			t.Fatalf("failed to resolve module: %v", err)
+		}
+		if m.ID != moduleUUID1 {
+			t.Errorf("expected ID %s, got '%s'", moduleUUID1, m.ID)
+		}
+	})
+
+	t.Run("Resolve Module by UUID", func(t *testing.T) {
+		m, err := resolver.ResolveModule(context.Background(), projUUID1, moduleUUID2)
+		if err != nil {
+			t.Fatalf("failed to resolve module: %v", err)
+		}
+		if m.Name != "Sprint Two" {
+			t.Errorf("expected name 'Sprint Two', got '%s'", m.Name)
+		}
+	})
+
+	t.Run("Verify Cache Hit (No API call)", func(t *testing.T) {
+		initialRequests := requestCount
+		_, err := resolver.ResolveModule(context.Background(), projUUID1, "Sprint One")
+		if err != nil {
+			t.Fatalf("failed to resolve: %v", err)
+		}
+		if requestCount != initialRequests {
+			t.Errorf("expected request count to remain %d, but increased to %d (cache miss)", initialRequests, requestCount)
+		}
+	})
+
+	t.Run("Not Found returns error", func(t *testing.T) {
+		_, err := resolver.ResolveModule(context.Background(), projUUID1, "Nonexistent Module")
+		if err == nil {
+			t.Fatal("expected error resolving unknown module, got nil")
+		}
+		expectedErr := "module not found for project " + projUUID1 + ": Nonexistent Module"
+		if err.Error() != expectedErr {
+			t.Errorf("expected error '%s', got '%v'", expectedErr, err)
 		}
 	})
 }

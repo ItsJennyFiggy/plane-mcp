@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/ItsJennyFiggy/plane-mcp/internal/config"
@@ -301,6 +302,7 @@ type mockClient struct {
 	createWorkItemCommentFn    func(ctx context.Context, projectID, itemID, comment string) error
 	updateWorkItemFn           func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error)
 	createWorkItemLinkFn       func(ctx context.Context, projectID, itemID, linkURL, title string) error
+	addWorkItemsToModuleFn     func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error
 }
 
 func (m *mockClient) ListProjects(ctx context.Context) ([]plane.Project, error) {
@@ -324,6 +326,9 @@ func (m *mockClient) UpdateWorkItem(ctx context.Context, projectID, itemID strin
 func (m *mockClient) CreateWorkItemLink(ctx context.Context, projectID, itemID, linkURL, title string) error {
 	return m.createWorkItemLinkFn(ctx, projectID, itemID, linkURL, title)
 }
+func (m *mockClient) AddWorkItemsToModule(ctx context.Context, projectID, moduleID string, workItemIDs []string) error {
+	return m.addWorkItemsToModuleFn(ctx, projectID, moduleID, workItemIDs)
+}
 
 // mockResolver is a test double for planeResolver.
 type mockResolver struct {
@@ -331,6 +336,7 @@ type mockResolver struct {
 	resolveProjectFn func(ctx context.Context, input string) (*plane.Project, error)
 	resolveStateFn   func(ctx context.Context, projectID string, input string) (*plane.State, error)
 	resolveLabelFn   func(ctx context.Context, projectID string, input string) (*plane.Label, error)
+	resolveModuleFn  func(ctx context.Context, projectID string, input string) (*plane.Module, error)
 	resolveMemberFn  func(ctx context.Context, input string) (*plane.Member, error)
 }
 
@@ -345,6 +351,9 @@ func (m *mockResolver) ResolveState(ctx context.Context, projectID string, input
 }
 func (m *mockResolver) ResolveLabel(ctx context.Context, projectID string, input string) (*plane.Label, error) {
 	return m.resolveLabelFn(ctx, projectID, input)
+}
+func (m *mockResolver) ResolveModule(ctx context.Context, projectID string, input string) (*plane.Module, error) {
+	return m.resolveModuleFn(ctx, projectID, input)
 }
 func (m *mockResolver) ResolveMember(ctx context.Context, input string) (*plane.Member, error) {
 	return m.resolveMemberFn(ctx, input)
@@ -1226,6 +1235,138 @@ func TestCreateTask_FormatError(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Error("expected IsError=true when formatter fails")
+	}
+}
+
+// TestCreateTask_WithModule — module resolves, task is created, then added to the module.
+func TestCreateTask_WithModule(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	created := &plane.WorkItem{ID: "wi-new", Name: "Module Task", SequenceID: 13}
+	var capturedModuleID string
+	var capturedWorkItemIDs []string
+	client := &mockClient{
+		createWorkItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error) {
+			return created, nil
+		},
+		addWorkItemsToModuleFn: func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error {
+			capturedModuleID = moduleID
+			capturedWorkItemIDs = workItemIDs
+			return nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "My Project"}, nil
+		},
+		resolveModuleFn: func(ctx context.Context, projectID, input string) (*plane.Module, error) {
+			return &plane.Module{ID: "mod-uuid", Name: "Sprint One"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: Module Task\n", nil
+		},
+	}
+	args := CreateTaskArgs{Project: "My Project", Name: "Module Task", Module: "Sprint One"}
+
+	// Act
+	result, err := createTask(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if capturedModuleID != "mod-uuid" {
+		t.Errorf("expected module ID 'mod-uuid', got '%s'", capturedModuleID)
+	}
+	if len(capturedWorkItemIDs) != 1 || capturedWorkItemIDs[0] != "wi-new" {
+		t.Errorf("expected work item IDs [wi-new], got %v", capturedWorkItemIDs)
+	}
+}
+
+// TestCreateTask_ModuleResolutionFailsBeforeCreate — fail fast: unresolved module errors
+// without ever creating the work item.
+func TestCreateTask_ModuleResolutionFailsBeforeCreate(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	createCalled := false
+	client := &mockClient{
+		createWorkItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error) {
+			createCalled = true
+			return &plane.WorkItem{ID: "wi-new"}, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "My Project"}, nil
+		},
+		resolveModuleFn: func(ctx context.Context, projectID, input string) (*plane.Module, error) {
+			return nil, errors.New("module not found: Bogus")
+		},
+	}
+	formatter := &mockFormatter{}
+	args := CreateTaskArgs{Project: "My Project", Name: "Module Task", Module: "Bogus"}
+
+	// Act
+	result, err := createTask(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when module resolution fails")
+	}
+	if createCalled {
+		t.Error("expected CreateWorkItem NOT to be called when module resolution fails")
+	}
+}
+
+// TestCreateTask_AddToModuleFailsAfterCreate — add-to-module failure after a successful
+// create surfaces a tool error noting the item was created.
+func TestCreateTask_AddToModuleFailsAfterCreate(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	created := &plane.WorkItem{ID: "wi-new", Name: "Module Task", SequenceID: 14}
+	client := &mockClient{
+		createWorkItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error) {
+			return created, nil
+		},
+		addWorkItemsToModuleFn: func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error {
+			return errors.New("module-issues endpoint failed")
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "My Project"}, nil
+		},
+		resolveModuleFn: func(ctx context.Context, projectID, input string) (*plane.Module, error) {
+			return &plane.Module{ID: "mod-uuid", Name: "Sprint One"}, nil
+		},
+	}
+	formatter := &mockFormatter{}
+	args := CreateTaskArgs{Project: "My Project", Name: "Module Task", Module: "Sprint One"}
+
+	// Act
+	result, err := createTask(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected IsError=true when add-to-module fails")
+	}
+	textContent, ok := result.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent, got %T", result.Content[0])
+	}
+	if !strings.Contains(textContent.Text, "was created but could not be added to module") {
+		t.Errorf("expected error to note the item was created, got: %s", textContent.Text)
 	}
 }
 

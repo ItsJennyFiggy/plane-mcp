@@ -33,6 +33,11 @@ type Resolver struct {
 	// projectID -> lowercase labelName -> Label
 	labelsByName map[string]map[string]*Label
 
+	// projectID -> moduleID -> Module
+	modulesByID map[string]map[string]*Module
+	// projectID -> lowercase moduleName -> Module
+	modulesByName map[string]map[string]*Module
+
 	membersByID    map[string]*Member
 	membersByName  map[string]*Member
 	membersByEmail map[string]*Member
@@ -54,6 +59,8 @@ func NewResolver(client *Client) *Resolver {
 		statesByName:         make(map[string]map[string]*State),
 		labelsByID:           make(map[string]map[string]*Label),
 		labelsByName:         make(map[string]map[string]*Label),
+		modulesByID:          make(map[string]map[string]*Module),
+		modulesByName:        make(map[string]map[string]*Module),
 		membersByID:          make(map[string]*Member),
 		membersByName:        make(map[string]*Member),
 		membersByEmail:       make(map[string]*Member),
@@ -144,6 +151,38 @@ func (r *Resolver) fetchLabels(ctx context.Context, projectID string) error {
 		l := &labels[i]
 		r.labelsByID[projectID][l.ID] = l
 		r.labelsByName[projectID][strings.ToLower(l.Name)] = l
+	}
+
+	return nil
+}
+
+// fetchModules loads all modules for a project and updates the cache.
+func (r *Resolver) fetchModules(ctx context.Context, projectID string) error {
+	modules, err := r.client.ListModules(ctx, projectID)
+	if err != nil {
+		return fmt.Errorf("failed to fetch modules for cache: %w", err)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, ok := r.modulesByID[projectID]; !ok {
+		r.modulesByID[projectID] = make(map[string]*Module)
+		r.modulesByName[projectID] = make(map[string]*Module)
+	}
+
+	// Clear project-specific modules cache
+	for k := range r.modulesByID[projectID] {
+		delete(r.modulesByID[projectID], k)
+	}
+	for k := range r.modulesByName[projectID] {
+		delete(r.modulesByName[projectID], k)
+	}
+
+	for i := range modules {
+		m := &modules[i]
+		r.modulesByID[projectID][m.ID] = m
+		r.modulesByName[projectID][strings.ToLower(m.Name)] = m
 	}
 
 	return nil
@@ -319,6 +358,48 @@ func (r *Resolver) ResolveLabel(ctx context.Context, projectID string, input str
 	}
 
 	return nil, fmt.Errorf("label not found for project %s: %s", projectID, input)
+}
+
+// ResolveModule resolves a module by name or UUID inside a specific project.
+func (r *Resolver) ResolveModule(ctx context.Context, projectID string, input string) (*Module, error) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return nil, fmt.Errorf("module input cannot be empty")
+	}
+
+	lookup := func() *Module {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+
+		if isUUID(input) {
+			if projectModules, ok := r.modulesByID[projectID]; ok {
+				return projectModules[input]
+			}
+			return nil
+		}
+
+		lowerInput := strings.ToLower(input)
+		if projectModules, ok := r.modulesByName[projectID]; ok {
+			return projectModules[lowerInput]
+		}
+		return nil
+	}
+
+	// 1. Try cache lookup
+	if m := lookup(); m != nil {
+		return m, nil
+	}
+
+	// 2. Fetch fresh modules and retry
+	if err := r.fetchModules(ctx, projectID); err != nil {
+		return nil, err
+	}
+
+	if m := lookup(); m != nil {
+		return m, nil
+	}
+
+	return nil, fmt.Errorf("module not found for project %s: %s", projectID, input)
 }
 
 // ResolveMember resolves a workspace member by name, display name, email, or UUID.

@@ -27,6 +27,7 @@ type planeClient interface {
 	CreateWorkItemComment(ctx context.Context, projectID, itemID, comment string) error
 	UpdateWorkItem(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error)
 	CreateWorkItemLink(ctx context.Context, projectID, itemID, linkURL, title string) error
+	AddWorkItemsToModule(ctx context.Context, projectID, moduleID string, workItemIDs []string) error
 }
 
 // planeResolver abstracts all name-resolution calls made by the tool handlers.
@@ -35,6 +36,7 @@ type planeResolver interface {
 	ResolveProject(ctx context.Context, input string) (*plane.Project, error)
 	ResolveState(ctx context.Context, projectID string, input string) (*plane.State, error)
 	ResolveLabel(ctx context.Context, projectID string, input string) (*plane.Label, error)
+	ResolveModule(ctx context.Context, projectID string, input string) (*plane.Module, error)
 	ResolveMember(ctx context.Context, input string) (*plane.Member, error)
 }
 
@@ -183,6 +185,7 @@ type CreateTaskArgs struct {
 	Priority    string   `json:"priority"`
 	Assignees   []string `json:"assignees"`
 	Labels      []string `json:"labels"`
+	Module      string   `json:"module"`
 }
 
 // ---------------------------------------------------------------------------
@@ -353,6 +356,17 @@ func createTask(ctx context.Context, args CreateTaskArgs, client planeClient, re
 	}
 	projectID := proj.ID
 
+	// Resolve the module up front (fail fast) — unlike assignees/labels, an unresolved
+	// module is a hard error: it is the explicit intent of the field, and we must not
+	// create an orphaned task that silently lands in no module.
+	var module *plane.Module
+	if args.Module != "" {
+		module, err = resolver.ResolveModule(ctx, projectID, args.Module)
+		if err != nil {
+			return toolError(fmt.Sprintf("failed to resolve module %q: %v", args.Module, err)), nil
+		}
+	}
+
 	// Resolve assignees — skip failures with a warning.
 	var assigneeIDs []string
 	for _, a := range args.Assignees {
@@ -395,6 +409,18 @@ func createTask(ctx context.Context, args CreateTaskArgs, client planeClient, re
 	created, err := client.CreateWorkItem(ctx, projectID, body)
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to create work item: %v", err)), nil
+	}
+
+	// Associate with the resolved module (if any). The work item already exists at this
+	// point, so on failure we surface a clear error noting the item was created — the
+	// agent should fix the module association rather than retry the create.
+	if module != nil {
+		if err := client.AddWorkItemsToModule(ctx, projectID, module.ID, []string{created.ID}); err != nil {
+			return toolError(fmt.Sprintf(
+				"work item %q (id %s) was created but could not be added to module %q: %v",
+				created.Name, created.ID, module.Name, err,
+			)), nil
+		}
 	}
 
 	yaml, err := formatter.FormatWorkItemYAML(ctx, created, "full")
@@ -458,7 +484,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 	if shouldRegister("create_task", plannerFull, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "create_task",
-			Description: "Create a new work item in the specified project with optional description, priority, assignees, and labels.",
+			Description: "Create a new work item in the specified project with optional description, priority, assignees, labels, and module. The description accepts Markdown (headings, lists, task lists, code blocks, blockquotes, emphasis) and is converted to Plane-native rich text. The module may be a module name or ID; if it cannot be resolved the task is not created.",
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args CreateTaskArgs) (*mcp.CallToolResult, any, error) {
 			result, err := createTask(ctx, args, client, resolver, formatter)
 			return result, nil, err
