@@ -95,6 +95,12 @@ type Label struct {
 	Color string `json:"color"`
 }
 
+// Module model
+type Module struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 // Member (UserLite) model
 type Member struct {
 	ID          string `json:"id"`
@@ -293,6 +299,12 @@ func (c *Client) ListLabels(ctx context.Context, projectID string) ([]Label, err
 	return listAllGeneric[Label](ctx, c, path, nil)
 }
 
+// ListModules retrieves all modules for a specific project
+func (c *Client) ListModules(ctx context.Context, projectID string) ([]Module, error) {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/modules/", c.WorkspaceSlug, projectID)
+	return listAllGeneric[Module](ctx, c, path, nil)
+}
+
 // ListWorkspaceMembers retrieves all members in the workspace
 func (c *Client) ListWorkspaceMembers(ctx context.Context) ([]Member, error) {
 	path := fmt.Sprintf("/api/v1/workspaces/%s/members/", c.WorkspaceSlug)
@@ -372,6 +384,16 @@ func (c *Client) CreateWorkItemLink(ctx context.Context, projectID, workItemID, 
 	body := map[string]any{
 		"url":   rawURL,
 		"title": title,
+	}
+	return c.request(ctx, "POST", path, nil, body, nil)
+}
+
+// AddWorkItemsToModule associates one or more work items with a module.
+// Path: POST /api/v1/workspaces/{slug}/projects/{projectID}/modules/{moduleID}/module-issues/
+func (c *Client) AddWorkItemsToModule(ctx context.Context, projectID, moduleID string, workItemIDs []string) error {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/modules/%s/module-issues/", c.WorkspaceSlug, projectID, moduleID)
+	body := map[string]any{
+		"issues": workItemIDs,
 	}
 	return c.request(ctx, "POST", path, nil, body, nil)
 }

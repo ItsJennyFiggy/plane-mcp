@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/ItsJennyFiggy/plane-mcp/internal/config"
@@ -240,6 +241,185 @@ func TestConvertDescriptionToHTML(t *testing.T) {
 			input: "Para one\n\n\n\nPara two",
 			want:  "<p>Para one</p><p>Para two</p>",
 		},
+		{
+			name:  "h1 heading",
+			input: "# Title",
+			want:  `<h1 class="editor-heading-block">Title</h1>`,
+		},
+		{
+			name:  "h3 heading",
+			input: "### Subsection",
+			want:  `<h3 class="editor-heading-block">Subsection</h3>`,
+		},
+		{
+			name:  "h6 heading is max level",
+			input: "###### Deep",
+			want:  `<h6 class="editor-heading-block">Deep</h6>`,
+		},
+		{
+			name:  "seven hashes is not a heading",
+			input: "####### NotHeading",
+			want:  "<p>####### NotHeading</p>",
+		},
+		{
+			name:  "unordered list",
+			input: "- one\n- two",
+			want:  "<ul><li>one</li><li>two</li></ul>",
+		},
+		{
+			name:  "unordered list with asterisks",
+			input: "* alpha\n* beta",
+			want:  "<ul><li>alpha</li><li>beta</li></ul>",
+		},
+		{
+			name:  "ordered list",
+			input: "1. first\n2. second",
+			want:  "<ol><li>first</li><li>second</li></ol>",
+		},
+		{
+			// Regression from AGENT-19: a numbered list must become <ol><li>, not literal "1\. ".
+			name:  "single ordered item regression",
+			input: "1. Item text",
+			want:  "<ol><li>Item text</li></ol>",
+		},
+		{
+			name:  "task list with checked and unchecked",
+			input: "- [ ] todo\n- [x] done",
+			want:  `<ul class="task-list"><li data-checked="false">todo</li><li data-checked="true">done</li></ul>`,
+		},
+		{
+			name:  "fenced code block is not inline-processed",
+			input: "```\nprint(\"**hi**\")\n```",
+			want:  "<pre><code>print(\"**hi**\")</code></pre>",
+		},
+		{
+			name:  "multi-line fenced code block",
+			input: "```\nline one\nline two\n```",
+			want:  "<pre><code>line one\nline two</code></pre>",
+		},
+		{
+			name:  "blockquote",
+			input: "> This is a quote",
+			want:  "<blockquote><p>This is a quote</p></blockquote>",
+		},
+		{
+			name:  "horizontal rule",
+			input: "---",
+			want:  "<hr>",
+		},
+		{
+			name:  "inline bold italic and code",
+			input: "This is **bold** and *italic* and `code`",
+			want:  "<p>This is <strong>bold</strong> and <em>italic</em> and <code>code</code></p>",
+		},
+		{
+			name:  "html special characters are escaped",
+			input: "a < b & c > d",
+			want:  "<p>a &lt; b &amp; c &gt; d</p>",
+		},
+		{
+			name:  "mixed document",
+			input: "# Heading\n\nSome intro text\n\n- bullet a\n- bullet b\n\n> a quote",
+			want:  `<h1 class="editor-heading-block">Heading</h1><p>Some intro text</p><ul><li>bullet a</li><li>bullet b</li></ul><blockquote><p>a quote</p></blockquote>`,
+		},
+		{
+			name:  "paragraph wrapping lines join with space",
+			input: "line one\nline two",
+			want:  "<p>line one line two</p>",
+		},
+		// --- Cases added by Test Writer (AGENT-18/19) ---
+		{
+			// Case 1: unordered bullet followed immediately by a task item (no blank line)
+			// should produce two separate lists.
+			name:  "unordered list followed immediately by task item produces two lists",
+			input: "- bullet\n- [ ] todo",
+			want:  `<ul><li>bullet</li></ul><ul class="task-list"><li data-checked="false">todo</li></ul>`,
+		},
+		{
+			// Case 2: unterminated code fence (no closing ```) must not panic and should
+			// treat remaining lines as code content.
+			name:  "unterminated code fence does not panic",
+			input: "```\nsome code",
+			want:  "<pre><code>some code</code></pre>",
+		},
+		{
+			// Case 3: multi-line blockquote — continuation lines joined with a single space.
+			name:  "multi-line blockquote joins lines with space",
+			input: "> line one\n> line two",
+			want:  "<blockquote><p>line one line two</p></blockquote>",
+		},
+		{
+			// Case 4a: *** is recognised as a horizontal rule.
+			name:  "triple-asterisk horizontal rule",
+			input: "***",
+			want:  "<hr>",
+		},
+		{
+			// Case 4b: ___ is recognised as a horizontal rule.
+			name:  "triple-underscore horizontal rule",
+			input: "___",
+			want:  "<hr>",
+		},
+		{
+			// Case 5: uppercase [X] task marker is treated as checked.
+			name:  "uppercase X task marker is checked",
+			input: "- [X] capital done",
+			want:  `<ul class="task-list"><li data-checked="true">capital done</li></ul>`,
+		},
+		{
+			// Case 6: inline emphasis inside a list item.
+			name:  "bold inline emphasis inside unordered list item",
+			input: "- **bold** item",
+			want:  "<ul><li><strong>bold</strong> item</li></ul>",
+		},
+		{
+			// Case 7: HTML escaping inside a code block (escapeHTML applied, not convertInline).
+			name:  "html special characters escaped inside code block",
+			input: "```\na < b && c > d\n```",
+			want:  "<pre><code>a &lt; b &amp;&amp; c &gt; d</code></pre>",
+		},
+		{
+			// Case 8: HTML escaping inside a heading.
+			name:  "html escaping inside heading",
+			input: "# a < b",
+			want:  `<h1 class="editor-heading-block">a &lt; b</h1>`,
+		},
+		{
+			// Case 9: "# " (hash + space) is stripped to "#" by TrimSpace before headingLevel
+			// sees it. headingLevel("#") returns 0 (no space follows the hashes), so it falls
+			// through to a paragraph. Actual output: <p>#</p>.
+			// This documents a known edge-case: a heading with no content requires at least
+			// one character after the space (e.g. "# a") to be recognised as a heading.
+			name:  "hash-space with no content is treated as a paragraph not a heading",
+			input: "# ",
+			want:  "<p>#</p>",
+		},
+		{
+			// Case 10: ordered list immediately followed by unordered list (no blank line).
+			name:  "ordered list followed immediately by unordered list",
+			input: "1. one\n- bullet",
+			want:  "<ol><li>one</li></ol><ul><li>bullet</li></ul>",
+		},
+		{
+			// Case 11: paragraph running directly into a heading (no blank line) — the
+			// heading is a block-start so paragraph accumulation stops at that line.
+			name:  "paragraph followed immediately by heading without blank line",
+			input: "intro text\n# Heading",
+			want:  `<p>intro text</p><h1 class="editor-heading-block">Heading</h1>`,
+		},
+		{
+			// Case 12a: CRLF line endings produce the same output as LF-only.
+			name:  "CRLF line endings produce same output as LF",
+			input: "# Title\r\n\r\nParagraph\r\n",
+			want:  `<h1 class="editor-heading-block">Title</h1><p>Paragraph</p>`,
+		},
+		{
+			// Case 12b: CRLF inside a fenced code block must NOT leak a trailing \r into
+			// the rendered output. The code-fence branch now strips trailing \r explicitly.
+			name:  "CRLF inside fenced code block does not leak carriage return",
+			input: "```\r\ncode line\r\n```\r\n",
+			want:  "<pre><code>code line</code></pre>",
+		},
 	}
 
 	for _, tc := range tests {
@@ -294,13 +474,14 @@ func TestToolText(t *testing.T) {
 
 // mockClient is a test double for planeClient.
 type mockClient struct {
-	listProjectsFn             func(ctx context.Context) ([]plane.Project, error)
-	getWorkItemByIdentifierFn  func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error)
-	listWorkItemsFn            func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error)
-	createWorkItemFn           func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error)
-	createWorkItemCommentFn    func(ctx context.Context, projectID, itemID, comment string) error
-	updateWorkItemFn           func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error)
-	createWorkItemLinkFn       func(ctx context.Context, projectID, itemID, linkURL, title string) error
+	listProjectsFn            func(ctx context.Context) ([]plane.Project, error)
+	getWorkItemByIdentifierFn func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error)
+	listWorkItemsFn           func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error)
+	createWorkItemFn          func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error)
+	createWorkItemCommentFn   func(ctx context.Context, projectID, itemID, comment string) error
+	updateWorkItemFn          func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error)
+	createWorkItemLinkFn      func(ctx context.Context, projectID, itemID, linkURL, title string) error
+	addWorkItemsToModuleFn    func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error
 }
 
 func (m *mockClient) ListProjects(ctx context.Context) ([]plane.Project, error) {
@@ -324,6 +505,9 @@ func (m *mockClient) UpdateWorkItem(ctx context.Context, projectID, itemID strin
 func (m *mockClient) CreateWorkItemLink(ctx context.Context, projectID, itemID, linkURL, title string) error {
 	return m.createWorkItemLinkFn(ctx, projectID, itemID, linkURL, title)
 }
+func (m *mockClient) AddWorkItemsToModule(ctx context.Context, projectID, moduleID string, workItemIDs []string) error {
+	return m.addWorkItemsToModuleFn(ctx, projectID, moduleID, workItemIDs)
+}
 
 // mockResolver is a test double for planeResolver.
 type mockResolver struct {
@@ -331,6 +515,7 @@ type mockResolver struct {
 	resolveProjectFn func(ctx context.Context, input string) (*plane.Project, error)
 	resolveStateFn   func(ctx context.Context, projectID string, input string) (*plane.State, error)
 	resolveLabelFn   func(ctx context.Context, projectID string, input string) (*plane.Label, error)
+	resolveModuleFn  func(ctx context.Context, projectID string, input string) (*plane.Module, error)
 	resolveMemberFn  func(ctx context.Context, input string) (*plane.Member, error)
 }
 
@@ -345,6 +530,9 @@ func (m *mockResolver) ResolveState(ctx context.Context, projectID string, input
 }
 func (m *mockResolver) ResolveLabel(ctx context.Context, projectID string, input string) (*plane.Label, error) {
 	return m.resolveLabelFn(ctx, projectID, input)
+}
+func (m *mockResolver) ResolveModule(ctx context.Context, projectID string, input string) (*plane.Module, error) {
+	return m.resolveModuleFn(ctx, projectID, input)
 }
 func (m *mockResolver) ResolveMember(ctx context.Context, input string) (*plane.Member, error) {
 	return m.resolveMemberFn(ctx, input)
@@ -1229,6 +1417,138 @@ func TestCreateTask_FormatError(t *testing.T) {
 	}
 }
 
+// TestCreateTask_WithModule — module resolves, task is created, then added to the module.
+func TestCreateTask_WithModule(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	created := &plane.WorkItem{ID: "wi-new", Name: "Module Task", SequenceID: 13}
+	var capturedModuleID string
+	var capturedWorkItemIDs []string
+	client := &mockClient{
+		createWorkItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error) {
+			return created, nil
+		},
+		addWorkItemsToModuleFn: func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error {
+			capturedModuleID = moduleID
+			capturedWorkItemIDs = workItemIDs
+			return nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "My Project"}, nil
+		},
+		resolveModuleFn: func(ctx context.Context, projectID, input string) (*plane.Module, error) {
+			return &plane.Module{ID: "mod-uuid", Name: "Sprint One"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: Module Task\n", nil
+		},
+	}
+	args := CreateTaskArgs{Project: "My Project", Name: "Module Task", Module: "Sprint One"}
+
+	// Act
+	result, err := createTask(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if capturedModuleID != "mod-uuid" {
+		t.Errorf("expected module ID 'mod-uuid', got '%s'", capturedModuleID)
+	}
+	if len(capturedWorkItemIDs) != 1 || capturedWorkItemIDs[0] != "wi-new" {
+		t.Errorf("expected work item IDs [wi-new], got %v", capturedWorkItemIDs)
+	}
+}
+
+// TestCreateTask_ModuleResolutionFailsBeforeCreate — fail fast: unresolved module errors
+// without ever creating the work item.
+func TestCreateTask_ModuleResolutionFailsBeforeCreate(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	createCalled := false
+	client := &mockClient{
+		createWorkItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error) {
+			createCalled = true
+			return &plane.WorkItem{ID: "wi-new"}, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "My Project"}, nil
+		},
+		resolveModuleFn: func(ctx context.Context, projectID, input string) (*plane.Module, error) {
+			return nil, errors.New("module not found: Bogus")
+		},
+	}
+	formatter := &mockFormatter{}
+	args := CreateTaskArgs{Project: "My Project", Name: "Module Task", Module: "Bogus"}
+
+	// Act
+	result, err := createTask(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when module resolution fails")
+	}
+	if createCalled {
+		t.Error("expected CreateWorkItem NOT to be called when module resolution fails")
+	}
+}
+
+// TestCreateTask_AddToModuleFailsAfterCreate — add-to-module failure after a successful
+// create surfaces a tool error noting the item was created.
+func TestCreateTask_AddToModuleFailsAfterCreate(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	created := &plane.WorkItem{ID: "wi-new", Name: "Module Task", SequenceID: 14}
+	client := &mockClient{
+		createWorkItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error) {
+			return created, nil
+		},
+		addWorkItemsToModuleFn: func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error {
+			return errors.New("module-issues endpoint failed")
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "My Project"}, nil
+		},
+		resolveModuleFn: func(ctx context.Context, projectID, input string) (*plane.Module, error) {
+			return &plane.Module{ID: "mod-uuid", Name: "Sprint One"}, nil
+		},
+	}
+	formatter := &mockFormatter{}
+	args := CreateTaskArgs{Project: "My Project", Name: "Module Task", Module: "Sprint One"}
+
+	// Act
+	result, err := createTask(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected IsError=true when add-to-module fails")
+	}
+	textContent, ok := result.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent, got %T", result.Content[0])
+	}
+	if !strings.Contains(textContent.Text, "was created but could not be added to module") {
+		t.Errorf("expected error to note the item was created, got: %s", textContent.Text)
+	}
+}
+
 // TestGetWorkItem_DefaultDetailIsSummary — omitting detail defaults to "summary".
 func TestGetWorkItem_DefaultDetailIsSummary(t *testing.T) {
 	// Arrange
@@ -1414,4 +1734,245 @@ func TestRegisterWithDeps_ExplicitToolList(t *testing.T) {
 	// Act
 	registerWithDeps(server, client, resolver, formatter, cfg)
 	// Only get_work_item should be registered — no panic.
+}
+
+// ---------------------------------------------------------------------------
+// createTask handler tests added by Test Writer (AGENT-18/19)
+// ---------------------------------------------------------------------------
+
+// TestCreateTask_DescriptionHTMLIsBuiltAndPassed — verifies that the Markdown description
+// is converted to HTML and placed in body["description_html"] (AGENT-19 seam).
+func TestCreateTask_DescriptionHTMLIsBuiltAndPassed(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	var capturedBody map[string]any
+	created := &plane.WorkItem{ID: "wi-desc", Name: "N", SequenceID: 20}
+	client := &mockClient{
+		createWorkItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedBody = body
+			return created, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "P"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: N\n", nil
+		},
+	}
+	args := CreateTaskArgs{
+		Project:     "P",
+		Name:        "N",
+		Description: "# Title\n\nParagraph",
+	}
+
+	// Act
+	result, err := createTask(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	wantHTML := `<h1 class="editor-heading-block">Title</h1><p>Paragraph</p>`
+	gotHTML, ok := capturedBody["description_html"].(string)
+	if !ok {
+		t.Fatalf("body[\"description_html\"] is not a string, got %T: %v", capturedBody["description_html"], capturedBody["description_html"])
+	}
+	if gotHTML != wantHTML {
+		t.Errorf("body[\"description_html\"] = %q, want %q", gotHTML, wantHTML)
+	}
+}
+
+// TestCreateTask_EmptyModuleSkipsResolution — when Module is empty, resolveModuleFn and
+// addWorkItemsToModuleFn must never be invoked.
+func TestCreateTask_EmptyModuleSkipsResolution(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	created := &plane.WorkItem{ID: "wi-no-mod", Name: "NoMod Task", SequenceID: 21}
+	client := &mockClient{
+		createWorkItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error) {
+			return created, nil
+		},
+		addWorkItemsToModuleFn: func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error {
+			t.Fatal("addWorkItemsToModule must not be called when Module is empty")
+			return nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "P"}, nil
+		},
+		resolveModuleFn: func(ctx context.Context, projectID, input string) (*plane.Module, error) {
+			t.Fatal("resolveModule must not be called when Module is empty")
+			return nil, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: NoMod Task\n", nil
+		},
+	}
+	args := CreateTaskArgs{
+		Project: "P",
+		Name:    "NoMod Task",
+		Module:  "", // empty — must skip resolution entirely
+	}
+
+	// Act
+	result, err := createTask(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+}
+
+// TestCreateTask_ModuleAssigneesAndLabelsTogether — when all three optional fields are set,
+// body["assignees"] and body["label_ids"] must be populated AND AddWorkItemsToModule must
+// be called with the resolved module ID and the new work-item ID.
+func TestCreateTask_ModuleAssigneesAndLabelsTogether(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	created := &plane.WorkItem{ID: "wi-combo", Name: "Combo Task", SequenceID: 22}
+	var capturedBody map[string]any
+	var capturedModuleID string
+	var capturedWorkItemIDs []string
+	client := &mockClient{
+		createWorkItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedBody = body
+			return created, nil
+		},
+		addWorkItemsToModuleFn: func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error {
+			capturedModuleID = moduleID
+			capturedWorkItemIDs = workItemIDs
+			return nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "P"}, nil
+		},
+		resolveModuleFn: func(ctx context.Context, projectID, input string) (*plane.Module, error) {
+			return &plane.Module{ID: "mod-combo", Name: "Sprint Combo"}, nil
+		},
+		resolveMemberFn: func(ctx context.Context, input string) (*plane.Member, error) {
+			return &plane.Member{ID: "member-combo", DisplayName: "Alice"}, nil
+		},
+		resolveLabelFn: func(ctx context.Context, projectID, input string) (*plane.Label, error) {
+			return &plane.Label{ID: "label-combo", Name: "feature"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: Combo Task\n", nil
+		},
+	}
+	args := CreateTaskArgs{
+		Project:   "P",
+		Name:      "Combo Task",
+		Module:    "Sprint Combo",
+		Assignees: []string{"alice"},
+		Labels:    []string{"feature"},
+	}
+
+	// Act
+	result, err := createTask(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	// body["assignees"] must be set
+	assignees, ok := capturedBody["assignees"].([]string)
+	if !ok || len(assignees) != 1 || assignees[0] != "member-combo" {
+		t.Errorf("body[\"assignees\"] = %v, want [member-combo]", capturedBody["assignees"])
+	}
+	// body["label_ids"] must be set
+	labelIDs, ok := capturedBody["label_ids"].([]string)
+	if !ok || len(labelIDs) != 1 || labelIDs[0] != "label-combo" {
+		t.Errorf("body[\"label_ids\"] = %v, want [label-combo]", capturedBody["label_ids"])
+	}
+	// AddWorkItemsToModule must have been called with the resolved IDs
+	if capturedModuleID != "mod-combo" {
+		t.Errorf("AddWorkItemsToModule called with moduleID=%q, want %q", capturedModuleID, "mod-combo")
+	}
+	if len(capturedWorkItemIDs) != 1 || capturedWorkItemIDs[0] != "wi-combo" {
+		t.Errorf("AddWorkItemsToModule called with workItemIDs=%v, want [wi-combo]", capturedWorkItemIDs)
+	}
+}
+
+// TestCreateTask_ModuleAndDescriptionTogether — when both module and description are set,
+// body["description_html"] must be populated AND AddWorkItemsToModule must be called.
+func TestCreateTask_ModuleAndDescriptionTogether(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	created := &plane.WorkItem{ID: "wi-moddesc", Name: "ModDesc Task", SequenceID: 23}
+	var capturedBody map[string]any
+	var capturedModuleID string
+	var capturedWorkItemIDs []string
+	client := &mockClient{
+		createWorkItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedBody = body
+			return created, nil
+		},
+		addWorkItemsToModuleFn: func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error {
+			capturedModuleID = moduleID
+			capturedWorkItemIDs = workItemIDs
+			return nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "P"}, nil
+		},
+		resolveModuleFn: func(ctx context.Context, projectID, input string) (*plane.Module, error) {
+			return &plane.Module{ID: "mod-desc", Name: "Sprint Desc"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: ModDesc Task\n", nil
+		},
+	}
+	args := CreateTaskArgs{
+		Project:     "P",
+		Name:        "ModDesc Task",
+		Module:      "Sprint Desc",
+		Description: "Some **markdown**",
+	}
+
+	// Act
+	result, err := createTask(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	// description_html must be present in the body
+	descHTML, ok := capturedBody["description_html"].(string)
+	if !ok || descHTML == "" {
+		t.Errorf("body[\"description_html\"] not populated, got %v", capturedBody["description_html"])
+	}
+	// AddWorkItemsToModule must have been called with the correct IDs
+	if capturedModuleID != "mod-desc" {
+		t.Errorf("AddWorkItemsToModule moduleID=%q, want %q", capturedModuleID, "mod-desc")
+	}
+	if len(capturedWorkItemIDs) != 1 || capturedWorkItemIDs[0] != "wi-moddesc" {
+		t.Errorf("AddWorkItemsToModule workItemIDs=%v, want [wi-moddesc]", capturedWorkItemIDs)
+	}
 }

@@ -732,3 +732,183 @@ func TestClientCreateWorkItemLink(t *testing.T) {
 		}
 	})
 }
+
+func TestClientListModules(t *testing.T) {
+	cfg := &config.Config{
+		PlaneAPIKey:        "test-key",
+		PlaneBaseURL:       "https://plane.example.com",
+		PlaneWorkspaceSlug: "test-workspace",
+	}
+
+	t.Run("Happy path returns modules", func(t *testing.T) {
+		// Arrange
+		client := NewClient(cfg)
+		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+			expectedPath := "/api/v1/workspaces/test-workspace/projects/proj-1/modules/"
+			if req.URL.Path != expectedPath {
+				t.Errorf("expected path '%s', got '%s'", expectedPath, req.URL.Path)
+			}
+			body := `[
+				{"id": "mod-1", "name": "Sprint One"},
+				{"id": "mod-2", "name": "Sprint Two"}
+			]`
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		})
+
+		// Act
+		modules, err := client.ListModules(context.Background(), "proj-1")
+
+		// Assert
+		if err != nil {
+			t.Fatalf("ListModules failed: %v", err)
+		}
+		if len(modules) != 2 {
+			t.Errorf("expected 2 modules, got %d", len(modules))
+		}
+		if modules[0].ID != "mod-1" || modules[0].Name != "Sprint One" {
+			t.Errorf("unexpected module: %+v", modules[0])
+		}
+	})
+
+	t.Run("Error path propagates error", func(t *testing.T) {
+		// Arrange
+		client := NewClient(cfg)
+		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: 404,
+				Body:       io.NopCloser(strings.NewReader("project not found")),
+			}, nil
+		})
+
+		// Act
+		_, err := client.ListModules(context.Background(), "proj-missing")
+
+		// Assert
+		if err == nil {
+			t.Fatal("expected error on 404, got nil")
+		}
+		if !strings.Contains(err.Error(), "404") {
+			t.Errorf("expected error message to mention 404, got: %v", err)
+		}
+	})
+}
+
+func TestClientAddWorkItemsToModule(t *testing.T) {
+	cfg := &config.Config{
+		PlaneAPIKey:        "test-key",
+		PlaneBaseURL:       "https://plane.example.com",
+		PlaneWorkspaceSlug: "test-workspace",
+	}
+
+	t.Run("Happy path posts issues array", func(t *testing.T) {
+		// Arrange
+		client := NewClient(cfg)
+		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+			expectedPath := "/api/v1/workspaces/test-workspace/projects/proj-1/modules/mod-1/module-issues/"
+			if req.URL.Path != expectedPath {
+				t.Errorf("expected path '%s', got '%s'", expectedPath, req.URL.Path)
+			}
+			if req.Method != "POST" {
+				t.Errorf("expected POST, got %s", req.Method)
+			}
+
+			// Verify request body carries the issues array
+			var reqBody map[string]any
+			bodyBytes, _ := io.ReadAll(req.Body)
+			if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
+				t.Fatalf("failed to parse request body: %v", err)
+			}
+			issues, ok := reqBody["issues"].([]any)
+			if !ok {
+				t.Fatalf("expected issues to be an array, got: %v", reqBody["issues"])
+			}
+			if len(issues) != 1 || issues[0] != "wi-42" {
+				t.Errorf("expected issues=[wi-42], got: %v", issues)
+			}
+
+			return &http.Response{
+				StatusCode: 201,
+				Body:       io.NopCloser(strings.NewReader(`{}`)),
+			}, nil
+		})
+
+		// Act
+		err := client.AddWorkItemsToModule(context.Background(), "proj-1", "mod-1", []string{"wi-42"})
+
+		// Assert
+		if err != nil {
+			t.Fatalf("AddWorkItemsToModule failed: %v", err)
+		}
+	})
+
+	t.Run("Error path propagates error", func(t *testing.T) {
+		// Arrange
+		client := NewClient(cfg)
+		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: 400,
+				Body:       io.NopCloser(strings.NewReader("bad request")),
+			}, nil
+		})
+
+		// Act
+		err := client.AddWorkItemsToModule(context.Background(), "proj-1", "mod-1", []string{"wi-42"})
+
+		// Assert
+		if err == nil {
+			t.Fatal("expected error on 400, got nil")
+		}
+		if !strings.Contains(err.Error(), "400") {
+			t.Errorf("expected error message to mention 400, got: %v", err)
+		}
+	})
+
+	t.Run("Empty workItemIDs slice posts empty array not null", func(t *testing.T) {
+		// Arrange
+		client := NewClient(cfg)
+		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+			// Assert request path and method
+			expectedPath := "/api/v1/workspaces/test-workspace/projects/proj-1/modules/mod-1/module-issues/"
+			if req.URL.Path != expectedPath {
+				t.Errorf("expected path '%s', got '%s'", expectedPath, req.URL.Path)
+			}
+			if req.Method != "POST" {
+				t.Errorf("expected POST, got %s", req.Method)
+			}
+
+			// Assert body: "issues" must be an empty array (not null / missing)
+			var reqBody map[string]any
+			bodyBytes, _ := io.ReadAll(req.Body)
+			if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
+				t.Fatalf("failed to parse request body: %v", err)
+			}
+			rawIssues, exists := reqBody["issues"]
+			if !exists {
+				t.Fatal("expected 'issues' key in request body, but it was absent")
+			}
+			issues, ok := rawIssues.([]any)
+			if !ok {
+				t.Fatalf("expected 'issues' to be a JSON array, got %T: %v", rawIssues, rawIssues)
+			}
+			if len(issues) != 0 {
+				t.Errorf("expected empty issues array, got length %d: %v", len(issues), issues)
+			}
+
+			return &http.Response{
+				StatusCode: 201,
+				Body:       io.NopCloser(strings.NewReader(`{}`)),
+			}, nil
+		})
+
+		// Act
+		err := client.AddWorkItemsToModule(context.Background(), "proj-1", "mod-1", []string{})
+
+		// Assert
+		if err != nil {
+			t.Fatalf("AddWorkItemsToModule with empty slice failed: %v", err)
+		}
+	})
+}
