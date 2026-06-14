@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.2](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.6.1...v1.6.2) (2026-06-14)
+
+
+### Bug Fixes
+
+* **create_task:** use 'labels' field name matching Plane API serializer ([#21](https://github.com/ItsJennyFiggy/plane-mcp/issues/21)) ([925cd08](https://github.com/ItsJennyFiggy/plane-mcp/commit/925cd08a0423f0652093d86770d96dd567a7ed19))
+
 ## [1.6.1](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.6.0...v1.6.1) (2026-06-14)
 
 
