@@ -33,6 +33,7 @@ type planeClient interface {
 	UpdateWorkItem(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error)
 	CreateWorkItemLink(ctx context.Context, projectID, itemID, linkURL, title string) error
 	AddWorkItemsToModule(ctx context.Context, projectID, moduleID string, workItemIDs []string) error
+	ListLabels(ctx context.Context, projectID string) ([]plane.Label, error)
 }
 
 // planeResolver abstracts all name-resolution calls made by the tool handlers.
@@ -410,6 +411,11 @@ func (s *FlexibleStringSlice) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// ListLabelsArgs are the arguments for the list_labels tool.
+type ListLabelsArgs struct {
+	Project string `json:"project"`
+}
+
 // CreateTaskArgs are the arguments for the create_task tool.
 type CreateTaskArgs struct {
 	Project     string              `json:"project"`
@@ -664,6 +670,30 @@ func createTask(ctx context.Context, args CreateTaskArgs, client planeClient, re
 	return toolText(yaml), nil
 }
 
+// listLabels implements the list_labels tool logic.
+func listLabels(ctx context.Context, args ListLabelsArgs, client planeClient, resolver planeResolver) (*mcp.CallToolResult, error) {
+	proj, err := resolver.ResolveProject(ctx, args.Project)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to resolve project %q: %v", args.Project, err)), nil
+	}
+
+	labels, err := client.ListLabels(ctx, proj.ID)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to list labels: %v", err)), nil
+	}
+
+	if len(labels) == 0 {
+		return toolText("No labels found in this project."), nil
+	}
+
+	var b strings.Builder
+	for _, lbl := range labels {
+		fmt.Fprintf(&b, "- name: %s\n  color: %s\n", lbl.Name, lbl.Color)
+	}
+
+	return toolText(b.String()), nil
+}
+
 // createTaskInputSchema builds the JSON Schema for the create_task tool.
 // It overrides the FlexibleStringSlice type to accept "string" in addition
 // to "null" and "array", so that MCP clients which serialise array
@@ -700,6 +730,16 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 			Description: "List all work items assigned to the current user, optionally filtered by project and state group.",
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args FindMyWorkArgs) (*mcp.CallToolResult, any, error) {
 			result, err := findMyWork(ctx, args, client, resolver, formatter)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("list_labels", workerPlannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "list_labels",
+			Description: "List all labels in a project, returning each label's name and color.",
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args ListLabelsArgs) (*mcp.CallToolResult, any, error) {
+			result, err := listLabels(ctx, args, client, resolver)
 			return result, nil, err
 		})
 	}
