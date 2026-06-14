@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/ItsJennyFiggy/plane-mcp/internal/config"
 	"github.com/ItsJennyFiggy/plane-mcp/internal/plane"
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -412,8 +414,8 @@ func (s *FlexibleStringSlice) UnmarshalJSON(data []byte) error {
 type CreateTaskArgs struct {
 	Project     string              `json:"project"`
 	Name        string              `json:"name"`
-	Description string              `json:"description"`
-	Priority    string              `json:"priority"`
+	Description string              `json:"description,omitempty"`
+	Priority    string              `json:"priority,omitempty"`
 	Assignees   FlexibleStringSlice `json:"assignees,omitempty"`
 	Labels      FlexibleStringSlice `json:"labels,omitempty"`
 	Module      string              `json:"module,omitempty"`
@@ -662,6 +664,26 @@ func createTask(ctx context.Context, args CreateTaskArgs, client planeClient, re
 	return toolText(yaml), nil
 }
 
+// createTaskInputSchema builds the JSON Schema for the create_task tool.
+// It overrides the FlexibleStringSlice type to accept "string" in addition
+// to "null" and "array", so that MCP clients which serialise array
+// arguments as JSON strings (e.g. "[\"uuid\"]") pass schema validation.
+func createTaskInputSchema() *jsonschema.Schema {
+	schema, err := jsonschema.For[CreateTaskArgs](&jsonschema.ForOptions{
+		TypeSchemas: map[reflect.Type]*jsonschema.Schema{
+			reflect.TypeFor[FlexibleStringSlice](): {
+				Types: []string{"null", "array", "string"},
+				Items: &jsonschema.Schema{Type: "string"},
+			},
+		},
+	})
+	if err != nil {
+		// Should never happen for a well-known struct.
+		panic(fmt.Sprintf("create_task: failed to build input schema: %v", err))
+	}
+	return schema
+}
+
 // ---------------------------------------------------------------------------
 // Register — wires up all five tools to the MCP server
 // ---------------------------------------------------------------------------
@@ -716,6 +738,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "create_task",
 			Description: "Create a new work item in the specified project with optional description, priority, assignees, labels, and module. The description accepts Markdown (headings, lists, task lists, code blocks, blockquotes, emphasis) and is converted to Plane-native rich text. The module may be a module name or ID; if it cannot be resolved the task is not created.",
+			InputSchema: createTaskInputSchema(),
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args CreateTaskArgs) (*mcp.CallToolResult, any, error) {
 			result, err := createTask(ctx, args, client, resolver, formatter)
 			return result, nil, err

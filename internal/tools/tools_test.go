@@ -9,6 +9,7 @@ import (
 
 	"github.com/ItsJennyFiggy/plane-mcp/internal/config"
 	"github.com/ItsJennyFiggy/plane-mcp/internal/plane"
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -2107,5 +2108,75 @@ func TestCreateTask_AssigneesLabelsOmitted(t *testing.T) {
 	}
 	if result.IsError {
 		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+}
+
+// TestCreateTask_SchemaAllowsStringifiedArrays — exercises the real SDK
+// validation path (Resolve → Validate → Unmarshal) to prove that
+// stringified array arguments for assignees/labels pass schema validation
+// and are correctly unmarshaled by FlexibleStringSlice.
+func TestCreateTask_SchemaAllowsStringifiedArrays(t *testing.T) {
+	schema := createTaskInputSchema()
+	resolved, err := schema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
+	if err != nil {
+		t.Fatalf("failed to resolve schema: %v", err)
+	}
+
+	// A raw JSON payload where assignees and labels are stringified.
+	raw := json.RawMessage(`{"project":"P","name":"N","assignees":"[\"uuid-1\"]","labels":"bug, feature"}`)
+
+	// Step 1 — unmarshal into map (as applySchema does).
+	var v map[string]any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatal(err)
+	}
+
+	// Step 2 — validate against the resolved schema (simulates applySchema).
+	if err := resolved.Validate(&v); err != nil {
+		t.Fatalf("schema validation rejected stringified arrays: %v", err)
+	}
+
+	// Step 3 — unmarshal into the typed struct (simulates the SDK's
+	// internaljson.Unmarshal after validation passes).
+	var args CreateTaskArgs
+	if err := json.Unmarshal(raw, &args); err != nil {
+		t.Fatalf("unmarshal into CreateTaskArgs failed: %v", err)
+	}
+
+	if len(args.Assignees) != 1 || args.Assignees[0] != "uuid-1" {
+		t.Errorf("assignees = %v, want [uuid-1]", []string(args.Assignees))
+	}
+	if len(args.Labels) != 2 || args.Labels[0] != "bug" || args.Labels[1] != "feature" {
+		t.Errorf("labels = %v, want [bug feature]", []string(args.Labels))
+	}
+}
+
+// TestCreateTask_SchemaRequiredList — verifies that optional fields are
+// absent from the schema's "required" list (regression test for the
+// description/priority side of Problem 1).
+func TestCreateTask_SchemaRequiredList(t *testing.T) {
+	schema := createTaskInputSchema()
+
+	required := schema.Required
+	expectedRequired := map[string]bool{"project": true, "name": true}
+
+	for _, r := range required {
+		if expectedRequired[r] {
+			delete(expectedRequired, r)
+		} else {
+			t.Errorf("unexpected required field: %q", r)
+		}
+	}
+	for r := range expectedRequired {
+		t.Errorf("missing required field: %q", r)
+	}
+
+	// Verify optional fields are NOT in required.
+	for _, opt := range []string{"description", "priority", "assignees", "labels", "module"} {
+		for _, r := range required {
+			if r == opt {
+				t.Errorf("%q should be optional but is in required list", opt)
+			}
+		}
 	}
 }
