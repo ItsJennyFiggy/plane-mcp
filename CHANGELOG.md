@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.6.2...v1.7.0) (2026-06-14)
+
+
+### Features
+
+* **tools:** add list_labels tool for label discovery ([#23](https://github.com/ItsJennyFiggy/plane-mcp/issues/23)) ([0639386](https://github.com/ItsJennyFiggy/plane-mcp/commit/06393865b3cd1c01149eb3717b1e1dc7434c3f3d))
+
 ## [1.6.2](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.6.1...v1.6.2) (2026-06-14)
 
 
