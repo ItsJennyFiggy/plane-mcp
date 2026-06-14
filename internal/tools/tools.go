@@ -636,7 +636,7 @@ func createTask(ctx context.Context, args CreateTaskArgs, client planeClient, re
 		body["assignees"] = assigneeIDs
 	}
 	if len(labelIDs) > 0 {
-		body["label_ids"] = labelIDs
+		body["labels"] = labelIDs
 	}
 
 	created, err := client.CreateWorkItem(ctx, projectID, body)
