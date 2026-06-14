@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.5.0...v1.6.0) (2026-06-14)
+
+
+### Features
+
+* **create_task:** module assignment + Markdown descriptions (AGENT-18, AGENT-19) ([#17](https://github.com/ItsJennyFiggy/plane-mcp/issues/17)) ([3301853](https://github.com/ItsJennyFiggy/plane-mcp/commit/3301853504e402e19a52a83f4124d0b073a55fdd))
+
 ## [1.5.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.4.1...v1.5.0) (2026-06-13)
 
 
