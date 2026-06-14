@@ -1,15 +1,19 @@
 package tools
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/ItsJennyFiggy/plane-mcp/internal/config"
 	"github.com/ItsJennyFiggy/plane-mcp/internal/plane"
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -346,15 +350,75 @@ type SubmitForReviewArgs struct {
 	Comment    string `json:"comment"`
 }
 
+// FlexibleStringSlice is a []string that unmarshals from either a JSON array
+// or a JSON string containing a JSON-encoded array (or a comma-separated
+// list). This makes MCP tools robust against clients that serialise array
+// arguments as strings.
+type FlexibleStringSlice []string
+
+// UnmarshalJSON implements json.Unmarshaler so FlexibleStringSlice accepts:
+//   - a JSON array: ["a", "b"]
+//   - a JSON string containing an array: "[\"a\", \"b\"]"
+//   - a JSON string containing a comma-separated list: "a, b"
+//   - null / empty string → empty slice
+func (s *FlexibleStringSlice) UnmarshalJSON(data []byte) error {
+	// 1. Trim whitespace and try as a JSON array first.
+	d := bytes.TrimSpace(data)
+	if len(d) > 0 && d[0] == '[' {
+		var arr []string
+		if err := json.Unmarshal(d, &arr); err != nil {
+			return err
+		}
+		*s = FlexibleStringSlice(arr)
+		return nil
+	}
+
+	// 2. Try as a JSON string.
+	var raw string
+	if err := json.Unmarshal(d, &raw); err != nil {
+		// If it's not a valid JSON value at all, treat as empty.
+		*s = nil
+		return nil
+	}
+
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		*s = nil
+		return nil
+	}
+
+	// 3. If the string starts with '[', treat it as a JSON-encoded array.
+	if len(raw) > 0 && raw[0] == '[' {
+		var arr []string
+		if err := json.Unmarshal([]byte(raw), &arr); err != nil {
+			return err
+		}
+		*s = FlexibleStringSlice(arr)
+		return nil
+	}
+
+	// 4. Otherwise, comma-split.
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	*s = FlexibleStringSlice(out)
+	return nil
+}
+
 // CreateTaskArgs are the arguments for the create_task tool.
 type CreateTaskArgs struct {
-	Project     string   `json:"project"`
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Priority    string   `json:"priority"`
-	Assignees   []string `json:"assignees"`
-	Labels      []string `json:"labels"`
-	Module      string   `json:"module"`
+	Project     string              `json:"project"`
+	Name        string              `json:"name"`
+	Description string              `json:"description,omitempty"`
+	Priority    string              `json:"priority,omitempty"`
+	Assignees   FlexibleStringSlice `json:"assignees,omitempty"`
+	Labels      FlexibleStringSlice `json:"labels,omitempty"`
+	Module      string              `json:"module,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -600,6 +664,26 @@ func createTask(ctx context.Context, args CreateTaskArgs, client planeClient, re
 	return toolText(yaml), nil
 }
 
+// createTaskInputSchema builds the JSON Schema for the create_task tool.
+// It overrides the FlexibleStringSlice type to accept "string" in addition
+// to "null" and "array", so that MCP clients which serialise array
+// arguments as JSON strings (e.g. "[\"uuid\"]") pass schema validation.
+func createTaskInputSchema() *jsonschema.Schema {
+	schema, err := jsonschema.For[CreateTaskArgs](&jsonschema.ForOptions{
+		TypeSchemas: map[reflect.Type]*jsonschema.Schema{
+			reflect.TypeFor[FlexibleStringSlice](): {
+				Types: []string{"null", "array", "string"},
+				Items: &jsonschema.Schema{Type: "string"},
+			},
+		},
+	})
+	if err != nil {
+		// Should never happen for a well-known struct.
+		panic(fmt.Sprintf("create_task: failed to build input schema: %v", err))
+	}
+	return schema
+}
+
 // ---------------------------------------------------------------------------
 // Register — wires up all five tools to the MCP server
 // ---------------------------------------------------------------------------
@@ -654,6 +738,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "create_task",
 			Description: "Create a new work item in the specified project with optional description, priority, assignees, labels, and module. The description accepts Markdown (headings, lists, task lists, code blocks, blockquotes, emphasis) and is converted to Plane-native rich text. The module may be a module name or ID; if it cannot be resolved the task is not created.",
+			InputSchema: createTaskInputSchema(),
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args CreateTaskArgs) (*mcp.CallToolResult, any, error) {
 			result, err := createTask(ctx, args, client, resolver, formatter)
 			return result, nil, err

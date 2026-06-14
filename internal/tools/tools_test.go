@@ -2,12 +2,14 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 
 	"github.com/ItsJennyFiggy/plane-mcp/internal/config"
 	"github.com/ItsJennyFiggy/plane-mcp/internal/plane"
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -1367,8 +1369,8 @@ func TestCreateTask_WithAssigneesAndLabels(t *testing.T) {
 	args := CreateTaskArgs{
 		Project:   "My Project",
 		Name:      "Tagged Task",
-		Assignees: []string{"good-user", "bad-user"}, // bad-user skipped
-		Labels:    []string{"bug", "missing-label"},  // missing-label skipped
+		Assignees: FlexibleStringSlice{"good-user", "bad-user"}, // bad-user skipped
+		Labels:    FlexibleStringSlice{"bug", "missing-label"},  // missing-label skipped
 	}
 
 	// Act
@@ -1880,8 +1882,8 @@ func TestCreateTask_ModuleAssigneesAndLabelsTogether(t *testing.T) {
 		Project:   "P",
 		Name:      "Combo Task",
 		Module:    "Sprint Combo",
-		Assignees: []string{"alice"},
-		Labels:    []string{"feature"},
+		Assignees: FlexibleStringSlice{"alice"},
+		Labels:    FlexibleStringSlice{"feature"},
 	}
 
 	// Act
@@ -1974,5 +1976,207 @@ func TestCreateTask_ModuleAndDescriptionTogether(t *testing.T) {
 	}
 	if len(capturedWorkItemIDs) != 1 || capturedWorkItemIDs[0] != "wi-moddesc" {
 		t.Errorf("AddWorkItemsToModule workItemIDs=%v, want [wi-moddesc]", capturedWorkItemIDs)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestFlexibleStringSlice_UnmarshalJSON — verifies the custom unmarshaler
+// accepts JSON arrays, stringified JSON arrays, comma-separated strings,
+// and edge cases (null / empty).
+// ---------------------------------------------------------------------------
+
+func TestFlexibleStringSlice_UnmarshalJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+		want []string
+	}{
+		{
+			name: "JSON array",
+			json: `["alice", "bob"]`,
+			want: []string{"alice", "bob"},
+		},
+		{
+			name: "empty JSON array",
+			json: `[]`,
+			want: []string{},
+		},
+		{
+			name: "stringified JSON array",
+			json: `"[\"uuid-1\", \"uuid-2\"]"`,
+			want: []string{"uuid-1", "uuid-2"},
+		},
+		{
+			name: "comma-separated string",
+			json: `"alice, bob, charlie"`,
+			want: []string{"alice", "bob", "charlie"},
+		},
+		{
+			name: "comma-separated string no spaces",
+			json: `"alice,bob"`,
+			want: []string{"alice", "bob"},
+		},
+		{
+			name: "single value string",
+			json: `"just-me"`,
+			want: []string{"just-me"},
+		},
+		{
+			name: "null",
+			json: `null`,
+			want: nil,
+		},
+		{
+			name: "empty string",
+			json: `""`,
+			want: nil,
+		},
+		{
+			name: "stringified empty array",
+			json: `"[]"`,
+			want: []string{},
+		},
+		{
+			name: "comma-separated with empty parts",
+			json: `"alice, , bob"`,
+			want: []string{"alice", "bob"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var s FlexibleStringSlice
+			err := json.Unmarshal([]byte(tt.json), &s)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.want == nil {
+				if s != nil {
+					t.Errorf("expected nil, got %v", []string(s))
+				}
+				return
+			}
+			if len(s) != len(tt.want) {
+				t.Fatalf("len mismatch: got %d, want %d (%v)", len(s), len(tt.want), []string(s))
+			}
+			for i := range s {
+				if s[i] != tt.want[i] {
+					t.Errorf("index %d: got %q, want %q", i, s[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestCreateTask_AssigneesLabelsOmitted — create_task succeeds without
+// assignees or labels (regression test for Problem 1: required fields).
+func TestCreateTask_AssigneesLabelsOmitted(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	created := &plane.WorkItem{ID: "wi-omit", Name: "Minimal Task", SequenceID: 25}
+	client := &mockClient{
+		createWorkItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error) {
+			// Verify assignees and labels are NOT in the body.
+			if _, ok := body["assignees"]; ok {
+				t.Error("assignees should not be present in body when omitted")
+			}
+			if _, ok := body["label_ids"]; ok {
+				t.Error("label_ids should not be present in body when omitted")
+			}
+			return created, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "My Project"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: Minimal Task\n", nil
+		},
+	}
+	// Explicitly zero-value for Assignees and Labels.
+	args := CreateTaskArgs{Project: "My Project", Name: "Minimal Task"}
+
+	// Act
+	result, err := createTask(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+}
+
+// TestCreateTask_SchemaAllowsStringifiedArrays — exercises the real SDK
+// validation path (Resolve → Validate → Unmarshal) to prove that
+// stringified array arguments for assignees/labels pass schema validation
+// and are correctly unmarshaled by FlexibleStringSlice.
+func TestCreateTask_SchemaAllowsStringifiedArrays(t *testing.T) {
+	schema := createTaskInputSchema()
+	resolved, err := schema.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
+	if err != nil {
+		t.Fatalf("failed to resolve schema: %v", err)
+	}
+
+	// A raw JSON payload where assignees and labels are stringified.
+	raw := json.RawMessage(`{"project":"P","name":"N","assignees":"[\"uuid-1\"]","labels":"bug, feature"}`)
+
+	// Step 1 — unmarshal into map (as applySchema does).
+	var v map[string]any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatal(err)
+	}
+
+	// Step 2 — validate against the resolved schema (simulates applySchema).
+	if err := resolved.Validate(&v); err != nil {
+		t.Fatalf("schema validation rejected stringified arrays: %v", err)
+	}
+
+	// Step 3 — unmarshal into the typed struct (simulates the SDK's
+	// internaljson.Unmarshal after validation passes).
+	var args CreateTaskArgs
+	if err := json.Unmarshal(raw, &args); err != nil {
+		t.Fatalf("unmarshal into CreateTaskArgs failed: %v", err)
+	}
+
+	if len(args.Assignees) != 1 || args.Assignees[0] != "uuid-1" {
+		t.Errorf("assignees = %v, want [uuid-1]", []string(args.Assignees))
+	}
+	if len(args.Labels) != 2 || args.Labels[0] != "bug" || args.Labels[1] != "feature" {
+		t.Errorf("labels = %v, want [bug feature]", []string(args.Labels))
+	}
+}
+
+// TestCreateTask_SchemaRequiredList — verifies that optional fields are
+// absent from the schema's "required" list (regression test for the
+// description/priority side of Problem 1).
+func TestCreateTask_SchemaRequiredList(t *testing.T) {
+	schema := createTaskInputSchema()
+
+	required := schema.Required
+	expectedRequired := map[string]bool{"project": true, "name": true}
+
+	for _, r := range required {
+		if expectedRequired[r] {
+			delete(expectedRequired, r)
+		} else {
+			t.Errorf("unexpected required field: %q", r)
+		}
+	}
+	for r := range expectedRequired {
+		t.Errorf("missing required field: %q", r)
+	}
+
+	// Verify optional fields are NOT in required.
+	for _, opt := range []string{"description", "priority", "assignees", "labels", "module"} {
+		for _, r := range required {
+			if r == opt {
+				t.Errorf("%q should be optional but is in required list", opt)
+			}
+		}
 	}
 }
