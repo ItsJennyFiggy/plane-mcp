@@ -11,6 +11,7 @@ import (
 	"github.com/ItsJennyFiggy/plane-mcp/internal/plane"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"gopkg.in/yaml.v3"
 )
 
 // ---------------------------------------------------------------------------
@@ -484,6 +485,7 @@ type mockClient struct {
 	updateWorkItemFn          func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error)
 	createWorkItemLinkFn      func(ctx context.Context, projectID, itemID, linkURL, title string) error
 	addWorkItemsToModuleFn    func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error
+	listLabelsFn              func(ctx context.Context, projectID string) ([]plane.Label, error)
 }
 
 func (m *mockClient) ListProjects(ctx context.Context) ([]plane.Project, error) {
@@ -509,6 +511,9 @@ func (m *mockClient) CreateWorkItemLink(ctx context.Context, projectID, itemID, 
 }
 func (m *mockClient) AddWorkItemsToModule(ctx context.Context, projectID, moduleID string, workItemIDs []string) error {
 	return m.addWorkItemsToModuleFn(ctx, projectID, moduleID, workItemIDs)
+}
+func (m *mockClient) ListLabels(ctx context.Context, projectID string) ([]plane.Label, error) {
+	return m.listLabelsFn(ctx, projectID)
 }
 
 // mockResolver is a test double for planeResolver.
@@ -1705,12 +1710,12 @@ func TestRegisterWithDeps_FullProfile(t *testing.T) {
 
 	// Act — register all tools (full profile)
 	registerWithDeps(server, client, resolver, formatter, cfg)
-	// No panic means all five tools were registered successfully.
+	// No panic means all six tools were registered successfully.
 	// (The MCP SDK panics if a tool with an invalid name is registered.)
 }
 
 func TestRegisterWithDeps_WorkerProfile(t *testing.T) {
-	// Arrange — worker profile should register 4 tools (not create_task)
+	// Arrange — worker profile should register 5 tools (not create_task)
 	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
 	client := &mockClient{}
 	resolver := &mockResolver{}
@@ -2178,5 +2183,193 @@ func TestCreateTask_SchemaRequiredList(t *testing.T) {
 				t.Errorf("%q should be optional but is in required list", opt)
 			}
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// listLabels handler tests (AGENT-30)
+// ---------------------------------------------------------------------------
+
+// TestListLabels_Success — happy path: labels found and formatted.
+func TestListLabels_Success(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	labels := []plane.Label{
+		{ID: "lbl-1", Name: "bug", Color: "#ff0000"},
+		{ID: "lbl-2", Name: "feature", Color: "#00ff00"},
+	}
+	client := &mockClient{
+		listLabelsFn: func(ctx context.Context, projectID string) ([]plane.Label, error) {
+			return labels, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "My Project"}, nil
+		},
+	}
+	args := ListLabelsArgs{Project: "My Project"}
+
+	// Act
+	result, err := listLabels(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got error: %+v", result.Content)
+	}
+	if len(result.Content) != 1 {
+		t.Fatalf("expected 1 content item, got %d", len(result.Content))
+	}
+	tc, ok := result.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected *mcp.TextContent, got %T", result.Content[0])
+	}
+	if !strings.Contains(tc.Text, `name: "bug"`) || !strings.Contains(tc.Text, `color: "#ff0000"`) {
+		t.Errorf("expected label details in output, got: %q", tc.Text)
+	}
+	if !strings.Contains(tc.Text, `name: "feature"`) || !strings.Contains(tc.Text, `color: "#00ff00"`) {
+		t.Errorf("expected second label details in output, got: %q", tc.Text)
+	}
+}
+
+// TestListLabels_YAMLRoundTrip — output must be parseable as valid YAML.
+func TestListLabels_YAMLRoundTrip(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	labels := []plane.Label{
+		{ID: "lbl-1", Name: "bug", Color: "#ff0000"},
+		{ID: "lbl-2", Name: "feature", Color: "#00ff00"},
+		{ID: "lbl-3", Name: "role:executor", Color: "#0000ff"},
+	}
+	client := &mockClient{
+		listLabelsFn: func(ctx context.Context, projectID string) ([]plane.Label, error) {
+			return labels, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid"}, nil
+		},
+	}
+	args := ListLabelsArgs{Project: "Test"}
+
+	// Act
+	result, err := listLabels(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected IsError=false: %+v", result.Content)
+	}
+
+	tc := result.Content[0].(*mcp.TextContent)
+
+	// Parse as YAML — must succeed.
+	var parsed []map[string]string
+	if err := yaml.Unmarshal([]byte(tc.Text), &parsed); err != nil {
+		t.Fatalf("output is not valid YAML: %v\noutput:\n%s", err, tc.Text)
+	}
+
+	if len(parsed) != 3 {
+		t.Fatalf("expected 3 labels, got %d", len(parsed))
+	}
+	if parsed[0]["name"] != "bug" || parsed[0]["color"] != "#ff0000" {
+		t.Errorf("first label: got name=%q color=%q", parsed[0]["name"], parsed[0]["color"])
+	}
+	if parsed[1]["name"] != "feature" || parsed[1]["color"] != "#00ff00" {
+		t.Errorf("second label: got name=%q color=%q", parsed[1]["name"], parsed[1]["color"])
+	}
+	// Label with colon in name must survive quoting.
+	if parsed[2]["name"] != "role:executor" || parsed[2]["color"] != "#0000ff" {
+		t.Errorf("third label: got name=%q color=%q", parsed[2]["name"], parsed[2]["color"])
+	}
+}
+
+// TestListLabels_Empty — no labels in project returns a clear message.
+func TestListLabels_Empty(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	client := &mockClient{
+		listLabelsFn: func(ctx context.Context, projectID string) ([]plane.Label, error) {
+			return nil, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid"}, nil
+		},
+	}
+	args := ListLabelsArgs{Project: "Empty Project"}
+
+	// Act
+	result, err := listLabels(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Error("expected IsError=false for empty result")
+	}
+	tc := result.Content[0].(*mcp.TextContent)
+	if tc.Text != "No labels found in this project." {
+		t.Errorf("expected 'No labels found' message, got: %q", tc.Text)
+	}
+}
+
+// TestListLabels_ProjectResolutionError — project not found returns error.
+func TestListLabels_ProjectResolutionError(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	client := &mockClient{}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return nil, errors.New("project not found")
+		},
+	}
+	args := ListLabelsArgs{Project: "Unknown"}
+
+	// Act
+	result, err := listLabels(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when project resolution fails")
+	}
+}
+
+// TestListLabels_ClientError — client.ListLabels error is surfaced.
+func TestListLabels_ClientError(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	client := &mockClient{
+		listLabelsFn: func(ctx context.Context, projectID string) ([]plane.Label, error) {
+			return nil, errors.New("api error")
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid"}, nil
+		},
+	}
+	args := ListLabelsArgs{Project: "My Project"}
+
+	// Act
+	result, err := listLabels(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when client.ListLabels fails")
 	}
 }

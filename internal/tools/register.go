@@ -6,7 +6,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Register wires up all five tool handlers to the MCP server, gated by profile/tool allowlist.
+// Register wires up all tool handlers to the MCP server, gated by profile/tool allowlist.
 //
 // Compile-time interface assertions ensure that *plane.Client and *plane.Resolver satisfy
 // the planeClient and planeResolver interfaces defined in tools.go. These assertions will
