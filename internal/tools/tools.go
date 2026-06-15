@@ -412,6 +412,10 @@ func (s *FlexibleStringSlice) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// ListProjectsArgs are the arguments for the list_projects tool.
+type ListProjectsArgs struct {
+}
+
 // ListLabelsArgs are the arguments for the list_labels tool.
 type ListLabelsArgs struct {
 	Project string `json:"project"`
@@ -702,6 +706,25 @@ func createTask(ctx context.Context, args CreateTaskArgs, client planeClient, re
 	return toolText(yaml), nil
 }
 
+// listProjects implements the list_projects tool logic.
+func listProjects(ctx context.Context, client planeClient) (*mcp.CallToolResult, error) {
+	projects, err := client.ListProjects(ctx)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to list projects: %v", err)), nil
+	}
+
+	if len(projects) == 0 {
+		return toolText("No projects found."), nil
+	}
+
+	var b strings.Builder
+	for _, p := range projects {
+		fmt.Fprintf(&b, "- identifier: %q\n  name: %q\n  id: %q\n", p.Identifier, p.Name, p.ID)
+	}
+
+	return toolText(b.String()), nil
+}
+
 // listLabels implements the list_labels tool logic.
 func listLabels(ctx context.Context, args ListLabelsArgs, client planeClient, resolver planeResolver) (*mcp.CallToolResult, error) {
 	proj, err := resolver.ResolveProject(ctx, args.Project)
@@ -859,6 +882,16 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 			Description: "List all work items assigned to the current user, optionally filtered by project and state group.",
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args FindMyWorkArgs) (*mcp.CallToolResult, any, error) {
 			result, err := findMyWork(ctx, args, client, resolver, formatter)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("list_projects", workerPlannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "list_projects",
+			Description: "List all projects, returning each project's identifier, name, and id.",
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args ListProjectsArgs) (*mcp.CallToolResult, any, error) {
+			result, err := listProjects(ctx, client)
 			return result, nil, err
 		})
 	}

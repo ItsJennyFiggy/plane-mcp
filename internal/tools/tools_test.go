@@ -2656,6 +2656,103 @@ func TestListLabels_ClientError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// list_projects handler tests (AGENT-29)
+// ---------------------------------------------------------------------------
+
+// TestListProjects_Success — happy path: projects found and formatted.
+func TestListProjects_Success(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	projects := []plane.Project{
+		{ID: "proj-uuid-1", Name: "Execution", Identifier: "EXEC"},
+		{ID: "proj-uuid-2", Name: "Agents", Identifier: "AGENT"},
+	}
+	client := &mockClient{
+		listProjectsFn: func(ctx context.Context) ([]plane.Project, error) {
+			return projects, nil
+		},
+	}
+
+	// Act
+	result, err := listProjects(ctx, client)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got error: %+v", result.Content)
+	}
+	if len(result.Content) != 1 {
+		t.Fatalf("expected 1 content item, got %d", len(result.Content))
+	}
+	tc, ok := result.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected *mcp.TextContent, got %T", result.Content[0])
+	}
+	if !strings.Contains(tc.Text, `identifier: "EXEC"`) || !strings.Contains(tc.Text, `name: "Execution"`) || !strings.Contains(tc.Text, `id: "proj-uuid-1"`) {
+		t.Errorf("expected first project details in output, got: %q", tc.Text)
+	}
+	if !strings.Contains(tc.Text, `identifier: "AGENT"`) || !strings.Contains(tc.Text, `name: "Agents"`) || !strings.Contains(tc.Text, `id: "proj-uuid-2"`) {
+		t.Errorf("expected second project details in output, got: %q", tc.Text)
+	}
+}
+
+// TestListProjects_Empty — no projects returns a clear message.
+func TestListProjects_Empty(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	client := &mockClient{
+		listProjectsFn: func(ctx context.Context) ([]plane.Project, error) {
+			return nil, nil
+		},
+	}
+
+	// Act
+	result, err := listProjects(ctx, client)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Error("expected IsError=false for empty result set")
+	}
+	if len(result.Content) != 1 {
+		t.Fatalf("expected 1 content item, got %d", len(result.Content))
+	}
+	tc, ok := result.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected *mcp.TextContent, got %T", result.Content[0])
+	}
+	if tc.Text != "No projects found." {
+		t.Errorf("expected 'No projects found.', got: %q", tc.Text)
+	}
+}
+
+// TestListProjects_Error — client error is surfaced as toolError.
+func TestListProjects_Error(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	client := &mockClient{
+		listProjectsFn: func(ctx context.Context) ([]plane.Project, error) {
+			return nil, errors.New("api error")
+		},
+	}
+
+	// Act
+	result, err := listProjects(ctx, client)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when client.ListProjects fails")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // add_label handler tests (AGENT-34)
 // ---------------------------------------------------------------------------
 
