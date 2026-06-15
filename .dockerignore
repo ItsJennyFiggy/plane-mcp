@@ -1,0 +1,40 @@
+# Git
+.git/
+.gitignore
+.editorconfig
+
+# CI/CD
+.github/
+.worktrees/
+
+# Agent configuration / analysis artifacts
+.agents/
+.claude/
+.codegraph/
+.reasonix/
+graphify-out/
+reasonix.toml
+CLAUDE.md
+
+# Release tooling
+.release-please-manifest.json
+release-please-config.json
+CHANGELOG.md
+
+# Documentation
+docs/
+README.md
+README.template.md
+LICENSE
+
+# Local build artifacts (binaries built by go build)
+app
+plane-mcp
+coverage.out
+
+# Docker
+.dockerignore
+Dockerfile
+
+# If reference-repos/ exists at the repo root, exclude it
+reference-repos/
