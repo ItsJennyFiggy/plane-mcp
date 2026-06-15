@@ -1,0 +1,30 @@
+# Git
+.git/
+.gitignore
+.editorconfig
+
+# CI/CD
+.github/
+.worktrees/
+
+# Agent configuration
+.agents/
+CLAUDE.md
+
+# Release tooling
+.release-please-manifest.json
+release-please-config.json
+CHANGELOG.md
+
+# Documentation
+docs/
+README.md
+README.template.md
+LICENSE
+
+# Docker
+.dockerignore
+Dockerfile
+
+# If reference-repos/ exists at the repo root, exclude it
+reference-repos/
