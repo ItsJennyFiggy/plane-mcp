@@ -328,8 +328,8 @@ func convertDescriptionToHTML(desc string) string {
 
 // FindMyWorkArgs are the arguments for the find_my_work tool.
 type FindMyWorkArgs struct {
-	Project    string `json:"project"`
-	StateGroup string `json:"state_group"`
+	Project    *string `json:"project,omitempty"`
+	StateGroup *string `json:"state_group,omitempty"`
 }
 
 // GetWorkItemArgs are the arguments for the get_work_item tool.
@@ -454,16 +454,16 @@ func findMyWork(ctx context.Context, args FindMyWorkArgs, client planeClient, re
 	params := map[string]string{
 		"assignees": callerID,
 	}
-	if args.StateGroup != "" {
-		params["state_group"] = args.StateGroup
+	if args.StateGroup != nil && *args.StateGroup != "" {
+		params["state_group"] = *args.StateGroup
 	}
 
 	var items []plane.WorkItem
 
-	if args.Project != "" {
-		proj, err := resolver.ResolveProject(ctx, args.Project)
+	if args.Project != nil && *args.Project != "" {
+		proj, err := resolver.ResolveProject(ctx, *args.Project)
 		if err != nil {
-			return toolError(fmt.Sprintf("failed to resolve project %q: %v", args.Project, err)), nil
+			return toolError(fmt.Sprintf("failed to resolve project %q: %v", *args.Project, err)), nil
 		}
 		items, err = client.ListWorkItems(ctx, proj.ID, params)
 		if err != nil {
