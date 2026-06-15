@@ -3273,3 +3273,411 @@ func TestRegisterWithDeps_AddRemoveLabel(t *testing.T) {
 	registerWithDeps(server, client, resolver, formatter, cfg)
 	// No panic = success (the SDK panics if a tool with a bad name is added).
 }
+
+// ---------------------------------------------------------------------------
+// assign_work_item tests (AGENT-57)
+// ---------------------------------------------------------------------------
+
+func TestAssignWorkItem_Set_Success(t *testing.T) {
+	ctx := context.Background()
+	item := &plane.WorkItem{
+		ID: "wi-1", Name: "Task", SequenceID: 1,
+		Project:   plane.Expandable[plane.Project]{ID: "proj-uuid"},
+		Assignees: []plane.Expandable[plane.Member]{{ID: "mem-old"}},
+	}
+	var capturedBody map[string]any
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedBody = body
+			return item, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveMemberFn: func(ctx context.Context, input string) (*plane.Member, error) {
+			return &plane.Member{ID: "mem-new", DisplayName: "Alice"}, nil
+		},
+	}
+	args := AssignWorkItemArgs{Identifier: "PROJ-1", Assignees: FlexibleStringSlice{"alice"}}
+
+	result, err := assignWorkItem(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got error: %+v", result.Content)
+	}
+
+	assigneeIDs, ok := capturedBody["assignees"].([]string)
+	if !ok {
+		t.Fatalf("assignees not a []string: %T", capturedBody["assignees"])
+	}
+	if len(assigneeIDs) != 1 || assigneeIDs[0] != "mem-new" {
+		t.Errorf("expected [mem-new], got %v", assigneeIDs)
+	}
+}
+
+func TestAssignWorkItem_Set_Clear(t *testing.T) {
+	ctx := context.Background()
+	item := &plane.WorkItem{
+		ID: "wi-1", Name: "Task", SequenceID: 1,
+		Project:   plane.Expandable[plane.Project]{ID: "proj-uuid"},
+		Assignees: []plane.Expandable[plane.Member]{{ID: "mem-old"}},
+	}
+	var capturedBody map[string]any
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedBody = body
+			return item, nil
+		},
+	}
+	resolver := &mockResolver{}
+	args := AssignWorkItemArgs{Identifier: "PROJ-1", Assignees: nil}
+
+	result, err := assignWorkItem(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got error: %+v", result.Content)
+	}
+
+	assigneeIDs, ok := capturedBody["assignees"].([]string)
+	if !ok {
+		t.Fatalf("assignees not a []string: %T", capturedBody["assignees"])
+	}
+	if len(assigneeIDs) != 0 {
+		t.Errorf("expected empty slice, got %v", assigneeIDs)
+	}
+}
+
+func TestAssignWorkItem_Add_Success(t *testing.T) {
+	ctx := context.Background()
+	item := &plane.WorkItem{
+		ID: "wi-1", Name: "Task", SequenceID: 1,
+		Project:   plane.Expandable[plane.Project]{ID: "proj-uuid"},
+		Assignees: []plane.Expandable[plane.Member]{{ID: "mem-old"}},
+	}
+	var capturedBody map[string]any
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedBody = body
+			return item, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveMemberFn: func(ctx context.Context, input string) (*plane.Member, error) {
+			return &plane.Member{ID: "mem-new", DisplayName: "Bob"}, nil
+		},
+	}
+	args := AssignWorkItemArgs{Identifier: "PROJ-1", Assignees: FlexibleStringSlice{"bob"}, Mode: "add"}
+
+	result, err := assignWorkItem(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got error: %+v", result.Content)
+	}
+
+	ids, ok := capturedBody["assignees"].([]string)
+	if !ok {
+		t.Fatalf("assignees not a []string: %T", capturedBody["assignees"])
+	}
+	if len(ids) != 2 {
+		t.Fatalf("expected 2 assignees, got %d: %v", len(ids), ids)
+	}
+	if ids[0] != "mem-old" || ids[1] != "mem-new" {
+		t.Errorf("expected [mem-old mem-new], got %v", ids)
+	}
+}
+
+func TestAssignWorkItem_Add_Idempotent(t *testing.T) {
+	ctx := context.Background()
+	item := &plane.WorkItem{
+		ID: "wi-1", Name: "Task", SequenceID: 1,
+		Project:   plane.Expandable[plane.Project]{ID: "proj-uuid"},
+		Assignees: []plane.Expandable[plane.Member]{{ID: "mem-existing"}},
+	}
+	var capturedBody map[string]any
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedBody = body
+			return item, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveMemberFn: func(ctx context.Context, input string) (*plane.Member, error) {
+			return &plane.Member{ID: "mem-existing", DisplayName: "Alice"}, nil
+		},
+	}
+	args := AssignWorkItemArgs{Identifier: "PROJ-1", Assignees: FlexibleStringSlice{"alice"}, Mode: "add"}
+
+	result, err := assignWorkItem(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got error: %+v", result.Content)
+	}
+
+	ids, ok := capturedBody["assignees"].([]string)
+	if !ok {
+		t.Fatalf("assignees not a []string: %T", capturedBody["assignees"])
+	}
+	if len(ids) != 1 || ids[0] != "mem-existing" {
+		t.Errorf("expected [mem-existing] (no duplicate), got %v", ids)
+	}
+}
+
+func TestAssignWorkItem_Remove_Success(t *testing.T) {
+	ctx := context.Background()
+	item := &plane.WorkItem{
+		ID: "wi-1", Name: "Task", SequenceID: 1,
+		Project:   plane.Expandable[plane.Project]{ID: "proj-uuid"},
+		Assignees: []plane.Expandable[plane.Member]{{ID: "mem-keep"}, {ID: "mem-remove"}},
+	}
+	var capturedBody map[string]any
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedBody = body
+			return item, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveMemberFn: func(ctx context.Context, input string) (*plane.Member, error) {
+			return &plane.Member{ID: "mem-remove", DisplayName: "Bob"}, nil
+		},
+	}
+	args := AssignWorkItemArgs{Identifier: "PROJ-1", Assignees: FlexibleStringSlice{"bob"}, Mode: "remove"}
+
+	result, err := assignWorkItem(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got error: %+v", result.Content)
+	}
+
+	ids, ok := capturedBody["assignees"].([]string)
+	if !ok {
+		t.Fatalf("assignees not a []string: %T", capturedBody["assignees"])
+	}
+	if len(ids) != 1 || ids[0] != "mem-keep" {
+		t.Errorf("expected [mem-keep], got %v", ids)
+	}
+}
+
+func TestAssignWorkItem_InvalidMode(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{}
+	resolver := &mockResolver{}
+	args := AssignWorkItemArgs{Identifier: "PROJ-1", Assignees: nil, Mode: "bogus"}
+
+	result, err := assignWorkItem(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for invalid mode")
+	}
+}
+
+func TestAssignWorkItem_InvalidIdentifier(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{}
+	resolver := &mockResolver{}
+	args := AssignWorkItemArgs{Identifier: "bad", Assignees: FlexibleStringSlice{"alice"}}
+
+	result, err := assignWorkItem(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for invalid identifier")
+	}
+}
+
+func TestAssignWorkItem_WorkItemNotFound(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return nil, errors.New("not found")
+		},
+	}
+	resolver := &mockResolver{}
+	args := AssignWorkItemArgs{Identifier: "PROJ-1", Assignees: FlexibleStringSlice{"alice"}}
+
+	result, err := assignWorkItem(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when work item not found")
+	}
+}
+
+func TestAssignWorkItem_AssigneeNotFound(t *testing.T) {
+	ctx := context.Background()
+	item := &plane.WorkItem{
+		ID: "wi-1", Name: "Task", SequenceID: 1,
+		Project:   plane.Expandable[plane.Project]{ID: "proj-uuid"},
+		Assignees: []plane.Expandable[plane.Member]{},
+	}
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveMemberFn: func(ctx context.Context, input string) (*plane.Member, error) {
+			return nil, errors.New("member not found")
+		},
+	}
+	args := AssignWorkItemArgs{Identifier: "PROJ-1", Assignees: FlexibleStringSlice{"nobody"}}
+
+	result, err := assignWorkItem(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when assignee resolution fails")
+	}
+}
+
+func TestAssignWorkItem_UpdateError(t *testing.T) {
+	ctx := context.Background()
+	item := &plane.WorkItem{
+		ID: "wi-1", Name: "Task", SequenceID: 1,
+		Project:   plane.Expandable[plane.Project]{ID: "proj-uuid"},
+		Assignees: []plane.Expandable[plane.Member]{},
+	}
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			return nil, errors.New("update failed")
+		},
+	}
+	resolver := &mockResolver{
+		resolveMemberFn: func(ctx context.Context, input string) (*plane.Member, error) {
+			return &plane.Member{ID: "mem-new", DisplayName: "Alice"}, nil
+		},
+	}
+	args := AssignWorkItemArgs{Identifier: "PROJ-1", Assignees: FlexibleStringSlice{"alice"}}
+
+	result, err := assignWorkItem(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when UpdateWorkItem fails")
+	}
+}
+
+func TestAssignWorkItem_ExpandedProject(t *testing.T) {
+	// Verify project ID is read from Val when expanded.
+	ctx := context.Background()
+	item := &plane.WorkItem{
+		ID: "wi-1", Name: "Task", SequenceID: 1,
+		Project: plane.Expandable[plane.Project]{
+			ID:  "proj-flat",
+			Val: &plane.Project{ID: "proj-expanded", Name: "Test"},
+		},
+		Assignees: []plane.Expandable[plane.Member]{},
+	}
+	var capturedProjectID string
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedProjectID = projectID
+			return item, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveMemberFn: func(ctx context.Context, input string) (*plane.Member, error) {
+			return &plane.Member{ID: "mem-new", DisplayName: "Alice"}, nil
+		},
+	}
+	args := AssignWorkItemArgs{Identifier: "PROJ-1", Assignees: FlexibleStringSlice{"alice"}}
+
+	result, err := assignWorkItem(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got error: %+v", result.Content)
+	}
+	if capturedProjectID != "proj-expanded" {
+		t.Errorf("expected projectID 'proj-expanded' from Val, got %q", capturedProjectID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// extractAssigneeIDs unit tests (AGENT-57)
+// ---------------------------------------------------------------------------
+
+func TestExtractAssigneeIDs(t *testing.T) {
+	assignees := []plane.Expandable[plane.Member]{
+		{ID: "id-1"},
+		{ID: "id-2", Val: &plane.Member{ID: "id-2", DisplayName: "Alice"}},
+		{ID: "", Val: &plane.Member{ID: "id-3", DisplayName: "Bob"}},
+		{ID: "", Val: nil},
+	}
+
+	ids := extractAssigneeIDs(assignees)
+
+	if len(ids) != 3 {
+		t.Fatalf("expected 3 ids, got %d: %v", len(ids), ids)
+	}
+	if ids[0] != "id-1" || ids[1] != "id-2" || ids[2] != "id-3" {
+		t.Errorf("expected [id-1 id-2 id-3], got %v", ids)
+	}
+}
+
+func TestExtractAssigneeIDs_Empty(t *testing.T) {
+	ids := extractAssigneeIDs(nil)
+	if len(ids) != 0 {
+		t.Errorf("expected empty slice for nil input, got %v", ids)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// assign_work_item registration test (AGENT-57)
+// ---------------------------------------------------------------------------
+
+// TestRegisterWithDeps_AssignWorkItem — assign_work_item must NOT register
+// under the worker profile (it is planner/planner/full only).
+func TestRegisterWithDeps_AssignWorkItem(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
+	client := &mockClient{}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{}
+	// Worker profile should NOT register assign_work_item.
+	cfg := &config.Config{PlaneMCPProfile: "worker"}
+
+	// Must not panic (if it tries to add, the SDK accepts; we just verify no panic).
+	registerWithDeps(server, client, resolver, formatter, cfg)
+
+	// Planner profile SHOULD register assign_work_item.
+	server2 := mcp.NewServer(&mcp.Implementation{Name: "test2", Version: "0"}, nil)
+	cfg2 := &config.Config{PlaneMCPProfile: "planner"}
+	registerWithDeps(server2, client, resolver, formatter, cfg2)
+}

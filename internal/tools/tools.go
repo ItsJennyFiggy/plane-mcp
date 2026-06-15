@@ -433,6 +433,13 @@ type RemoveLabelArgs struct {
 	Label      string `json:"label"`
 }
 
+// AssignWorkItemArgs are the arguments for the assign_work_item tool.
+type AssignWorkItemArgs struct {
+	Identifier string              `json:"identifier"`
+	Assignees  FlexibleStringSlice `json:"assignees"`
+	Mode       string              `json:"mode,omitempty"`
+}
+
 // CreateTaskArgs are the arguments for the create_task tool.
 type CreateTaskArgs struct {
 	Project     string              `json:"project"`
@@ -751,8 +758,6 @@ func listLabels(ctx context.Context, args ListLabelsArgs, client planeClient, re
 
 // extractLabelIDs returns the ID strings from a slice of Expandable[Label],
 // handling both expanded (Val != nil) and non-expanded (ID only) entries.
-// extractLabelIDs returns the ID strings from a slice of Expandable[Label],
-// handling both expanded (Val != nil) and non-expanded (ID only) entries.
 func extractLabelIDs(labels []plane.Expandable[plane.Label]) []string {
 	ids := make([]string, 0, len(labels))
 	for _, l := range labels {
@@ -760,6 +765,20 @@ func extractLabelIDs(labels []plane.Expandable[plane.Label]) []string {
 			ids = append(ids, l.Val.ID)
 		} else if l.ID != "" {
 			ids = append(ids, l.ID)
+		}
+	}
+	return ids
+}
+
+// extractAssigneeIDs returns the ID strings from a slice of Expandable[Member],
+// handling both expanded (Val != nil) and non-expanded (ID only) entries.
+func extractAssigneeIDs(assignees []plane.Expandable[plane.Member]) []string {
+	ids := make([]string, 0, len(assignees))
+	for _, a := range assignees {
+		if a.Val != nil {
+			ids = append(ids, a.Val.ID)
+		} else if a.ID != "" {
+			ids = append(ids, a.ID)
 		}
 	}
 	return ids
@@ -846,6 +865,95 @@ func removeLabel(ctx context.Context, args RemoveLabelArgs, client planeClient, 
 	return toolText(fmt.Sprintf("Label %q removed from %s.", label.Name, args.Identifier)), nil
 }
 
+// assignWorkItem implements the assign_work_item tool logic.
+//
+// Modes:
+//   - "set" (default): replaces the entire assignees list with the resolved IDs.
+//   - "add": appends resolved IDs to the current assignees list (idempotent — no duplicates).
+//   - "remove": removes resolved IDs from the current assignees list.
+//
+// An empty assignees list with mode "set" clears all assignees.
+//
+// Non-atomicity note: because Plane has no atomic add/remove-assignee endpoint,
+// this handler uses GET → mutate → PATCH-full-array. Concurrent callers may race.
+func assignWorkItem(ctx context.Context, args AssignWorkItemArgs, client planeClient, resolver planeResolver) (*mcp.CallToolResult, error) {
+	mode := args.Mode
+	if mode == "" {
+		mode = "set"
+	}
+	if mode != "set" && mode != "add" && mode != "remove" {
+		return toolError(fmt.Sprintf("invalid mode %q: must be 'set', 'add', or 'remove'", mode)), nil
+	}
+
+	projIdentifier, seqID, err := parseIdentifier(args.Identifier)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+
+	item, err := client.GetWorkItemByIdentifier(ctx, projIdentifier, seqID)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
+	}
+
+	projectID := item.Project.ID
+	if item.Project.Val != nil {
+		projectID = item.Project.Val.ID
+	}
+
+	// Resolve all new assignees up front.
+	var resolved []plane.Member
+	for _, a := range args.Assignees {
+		member, err := resolver.ResolveMember(ctx, a)
+		if err != nil {
+			return toolError(fmt.Sprintf("failed to resolve assignee %q: %v", a, err)), nil
+		}
+		resolved = append(resolved, *member)
+	}
+
+	currentIDs := extractAssigneeIDs(item.Assignees)
+
+	var newIDs []string
+	switch mode {
+	case "set":
+		for _, m := range resolved {
+			newIDs = append(newIDs, m.ID)
+		}
+	case "add":
+		// Start from current, append only new IDs.
+		newIDs = append(newIDs, currentIDs...)
+		for _, m := range resolved {
+			if !slices.Contains(newIDs, m.ID) {
+				newIDs = append(newIDs, m.ID)
+			}
+		}
+	case "remove":
+		// Build a set of IDs to remove.
+		removeSet := make(map[string]struct{}, len(resolved))
+		for _, m := range resolved {
+			removeSet[m.ID] = struct{}{}
+		}
+		for _, id := range currentIDs {
+			if _, ok := removeSet[id]; !ok {
+				newIDs = append(newIDs, id)
+			}
+		}
+	}
+
+	if _, err := client.UpdateWorkItem(ctx, projectID, item.ID, map[string]any{"assignees": newIDs}); err != nil {
+		return toolError(fmt.Sprintf("failed to update assignees: %v", err)), nil
+	}
+
+	if len(newIDs) == 0 {
+		return toolText(fmt.Sprintf("Assignees cleared on %s.", args.Identifier)), nil
+	}
+
+	var names []string
+	for _, m := range resolved {
+		names = append(names, m.DisplayName)
+	}
+	return toolText(fmt.Sprintf("Assignees %v set on %s (mode=%s).", names, args.Identifier, mode)), nil
+}
+
 // createTaskInputSchema builds the JSON Schema for the create_task tool.
 // It overrides the FlexibleStringSlice type to accept "string" in addition
 // to "null" and "array", so that MCP clients which serialise array
@@ -922,6 +1030,16 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 			Description: "Detach a label (by name or id) from a work item. Idempotent — returns success if the label is already absent.",
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args RemoveLabelArgs) (*mcp.CallToolResult, any, error) {
 			result, err := removeLabel(ctx, args, client, resolver)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("assign_work_item", plannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "assign_work_item",
+			Description: "Set, add, or remove assignees on a work item by user name, display name, email, or ID. Mode 'set' replaces all assignees, 'add' appends, 'remove' removes. An empty assignees list with mode 'set' clears all assignees.",
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args AssignWorkItemArgs) (*mcp.CallToolResult, any, error) {
+			result, err := assignWorkItem(ctx, args, client, resolver)
 			return result, nil, err
 		})
 	}
