@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.1](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.8.0...v1.8.1) (2026-06-15)
+
+
+### Performance Improvements
+
+* **docker:** speed up GHCR image build with .dockerignore and layer caching ([#27](https://github.com/ItsJennyFiggy/plane-mcp/issues/27)) ([9446ade](https://github.com/ItsJennyFiggy/plane-mcp/commit/9446adea780cdc308fd1b3918b49e96ded77929a))
+
 ## [1.8.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.7.0...v1.8.0) (2026-06-15)
 
 
