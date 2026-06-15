@@ -8,6 +8,7 @@ import (
 	"log"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -708,6 +709,8 @@ func listLabels(ctx context.Context, args ListLabelsArgs, client planeClient, re
 
 // extractLabelIDs returns the ID strings from a slice of Expandable[Label],
 // handling both expanded (Val != nil) and non-expanded (ID only) entries.
+// extractLabelIDs returns the ID strings from a slice of Expandable[Label],
+// handling both expanded (Val != nil) and non-expanded (ID only) entries.
 func extractLabelIDs(labels []plane.Expandable[plane.Label]) []string {
 	ids := make([]string, 0, len(labels))
 	for _, l := range labels {
@@ -720,28 +723,12 @@ func extractLabelIDs(labels []plane.Expandable[plane.Label]) []string {
 	return ids
 }
 
-// containsString reports whether s is present in ss.
-func containsString(ss []string, s string) bool {
-	for _, v := range ss {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}
-
-// filterOutString returns a new slice with all occurrences of s removed.
-func filterOutString(ss []string, s string) []string {
-	out := make([]string, 0, len(ss))
-	for _, v := range ss {
-		if v != s {
-			out = append(out, v)
-		}
-	}
-	return out
-}
-
 // addLabel implements the add_label tool logic.
+//
+// Non-atomicity note: because Plane has no atomic add/remove-label endpoint,
+// this handler uses GET → mutate → PATCH-full-array. If two concurrent callers
+// modify labels on the same work item, the later PATCH replaces the entire
+// labels array and may silently overwrite the earlier change.
 func addLabel(ctx context.Context, args AddLabelArgs, client planeClient, resolver planeResolver) (*mcp.CallToolResult, error) {
 	projIdentifier, seqID, err := parseIdentifier(args.Identifier)
 	if err != nil {
@@ -764,7 +751,7 @@ func addLabel(ctx context.Context, args AddLabelArgs, client planeClient, resolv
 	}
 
 	currentIDs := extractLabelIDs(item.Labels)
-	if containsString(currentIDs, label.ID) {
+	if slices.Contains(currentIDs, label.ID) {
 		return toolText(fmt.Sprintf("Label %q is already attached to %s — no-op.", label.Name, args.Identifier)), nil
 	}
 
@@ -799,11 +786,17 @@ func removeLabel(ctx context.Context, args RemoveLabelArgs, client planeClient, 
 	}
 
 	currentIDs := extractLabelIDs(item.Labels)
-	if !containsString(currentIDs, label.ID) {
+	if !slices.Contains(currentIDs, label.ID) {
 		return toolText(fmt.Sprintf("Label %q is not attached to %s — no-op.", label.Name, args.Identifier)), nil
 	}
 
-	newIDs := filterOutString(currentIDs, label.ID)
+	// Build a new slice excluding the target label.
+	newIDs := make([]string, 0, len(currentIDs))
+	for _, id := range currentIDs {
+		if id != label.ID {
+			newIDs = append(newIDs, id)
+		}
+	}
 	if _, err := client.UpdateWorkItem(ctx, projectID, item.ID, map[string]any{"labels": newIDs}); err != nil {
 		return toolError(fmt.Sprintf("failed to detach label: %v", err)), nil
 	}
