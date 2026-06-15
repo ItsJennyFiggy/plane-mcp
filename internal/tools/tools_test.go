@@ -2227,10 +2227,10 @@ func TestListLabels_Success(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *mcp.TextContent, got %T", result.Content[0])
 	}
-	if !strings.Contains(tc.Text, `name: "bug"`) || !strings.Contains(tc.Text, `color: "#ff0000"`) {
+	if !strings.Contains(tc.Text, `name: "bug"`) || !strings.Contains(tc.Text, `color: "#ff0000"`) || !strings.Contains(tc.Text, `id: "lbl-1"`) {
 		t.Errorf("expected label details in output, got: %q", tc.Text)
 	}
-	if !strings.Contains(tc.Text, `name: "feature"`) || !strings.Contains(tc.Text, `color: "#00ff00"`) {
+	if !strings.Contains(tc.Text, `name: "feature"`) || !strings.Contains(tc.Text, `color: "#00ff00"`) || !strings.Contains(tc.Text, `id: "lbl-2"`) {
 		t.Errorf("expected second label details in output, got: %q", tc.Text)
 	}
 }
@@ -2278,11 +2278,11 @@ func TestListLabels_YAMLRoundTrip(t *testing.T) {
 	if len(parsed) != 3 {
 		t.Fatalf("expected 3 labels, got %d", len(parsed))
 	}
-	if parsed[0]["name"] != "bug" || parsed[0]["color"] != "#ff0000" {
-		t.Errorf("first label: got name=%q color=%q", parsed[0]["name"], parsed[0]["color"])
+	if parsed[0]["name"] != "bug" || parsed[0]["color"] != "#ff0000" || parsed[0]["id"] != "lbl-1" {
+		t.Errorf("first label: got id=%q name=%q color=%q", parsed[0]["id"], parsed[0]["name"], parsed[0]["color"])
 	}
-	if parsed[1]["name"] != "feature" || parsed[1]["color"] != "#00ff00" {
-		t.Errorf("second label: got name=%q color=%q", parsed[1]["name"], parsed[1]["color"])
+	if parsed[1]["name"] != "feature" || parsed[1]["color"] != "#00ff00" || parsed[1]["id"] != "lbl-2" {
+		t.Errorf("second label: got id=%q name=%q color=%q", parsed[1]["id"], parsed[1]["name"], parsed[1]["color"])
 	}
 	// Label with colon in name must survive quoting.
 	if parsed[2]["name"] != "role:executor" || parsed[2]["color"] != "#0000ff" {
@@ -2372,4 +2372,526 @@ func TestListLabels_ClientError(t *testing.T) {
 	if !result.IsError {
 		t.Error("expected IsError=true when client.ListLabels fails")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// add_label handler tests (AGENT-34)
+// ---------------------------------------------------------------------------
+
+// TestAddLabel_Success — happy path: label resolved and attached.
+func TestAddLabel_Success(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	item := &plane.WorkItem{
+		ID: "wi-1", Name: "Task", SequenceID: 1,
+		Project: plane.Expandable[plane.Project]{ID: "proj-uuid"},
+		Labels:  []plane.Expandable[plane.Label]{{ID: "lbl-existing"}},
+	}
+	var capturedBody map[string]any
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedBody = body
+			return item, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveLabelFn: func(ctx context.Context, projectID, input string) (*plane.Label, error) {
+			return &plane.Label{ID: "lbl-new", Name: "enhancement"}, nil
+		},
+	}
+	args := AddLabelArgs{Identifier: "PROJ-1", Label: "enhancement"}
+
+	// Act
+	result, err := addLabel(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got error: %+v", result.Content)
+	}
+	labelIDs, ok := capturedBody["labels"].([]string)
+	if !ok {
+		t.Fatalf("labels not a []string: %T", capturedBody["labels"])
+	}
+	if len(labelIDs) != 2 {
+		t.Fatalf("expected 2 labels, got %d: %v", len(labelIDs), labelIDs)
+	}
+	if labelIDs[0] != "lbl-existing" || labelIDs[1] != "lbl-new" {
+		t.Errorf("expected [lbl-existing lbl-new], got %v", labelIDs)
+	}
+}
+
+// TestAddLabel_AlreadyAttached — idempotent: no-op when label is already present.
+func TestAddLabel_AlreadyAttached(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	item := &plane.WorkItem{
+		ID: "wi-1", Name: "Task", SequenceID: 1,
+		Project: plane.Expandable[plane.Project]{ID: "proj-uuid"},
+		Labels:  []plane.Expandable[plane.Label]{{ID: "lbl-feature"}},
+	}
+	updateCalled := false
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			updateCalled = true
+			return item, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveLabelFn: func(ctx context.Context, projectID, input string) (*plane.Label, error) {
+			return &plane.Label{ID: "lbl-feature", Name: "feature"}, nil
+		},
+	}
+	args := AddLabelArgs{Identifier: "PROJ-1", Label: "feature"}
+
+	// Act
+	result, err := addLabel(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got error: %+v", result.Content)
+	}
+	if updateCalled {
+		t.Error("UpdateWorkItem must not be called when label is already attached")
+	}
+}
+
+// TestAddLabel_UnknownLabel — label not found in project returns clear error.
+func TestAddLabel_UnknownLabel(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	item := &plane.WorkItem{
+		ID: "wi-1", Name: "Task", SequenceID: 1,
+		Project: plane.Expandable[plane.Project]{ID: "proj-uuid"},
+		Labels:  []plane.Expandable[plane.Label]{},
+	}
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveLabelFn: func(ctx context.Context, projectID, input string) (*plane.Label, error) {
+			return nil, errors.New("label not found")
+		},
+	}
+	args := AddLabelArgs{Identifier: "PROJ-1", Label: "nonexistent"}
+
+	// Act
+	result, err := addLabel(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when label resolution fails")
+	}
+}
+
+// TestAddLabel_InvalidIdentifier — malformed identifier returns error.
+func TestAddLabel_InvalidIdentifier(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	client := &mockClient{}
+	resolver := &mockResolver{}
+	args := AddLabelArgs{Identifier: "bad", Label: "bug"}
+
+	// Act
+	result, err := addLabel(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for invalid identifier")
+	}
+}
+
+// TestAddLabel_WorkItemNotFound — work item not found returns clear error.
+func TestAddLabel_WorkItemNotFound(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return nil, errors.New("not found")
+		},
+	}
+	resolver := &mockResolver{}
+	args := AddLabelArgs{Identifier: "PROJ-1", Label: "bug"}
+
+	// Act
+	result, err := addLabel(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when work item not found")
+	}
+}
+
+// TestAddLabel_UpdateError — client.UpdateWorkItem error is surfaced.
+func TestAddLabel_UpdateError(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	item := &plane.WorkItem{
+		ID: "wi-1", Name: "Task", SequenceID: 1,
+		Project: plane.Expandable[plane.Project]{ID: "proj-uuid"},
+		Labels:  []plane.Expandable[plane.Label]{},
+	}
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			return nil, errors.New("api error")
+		},
+	}
+	resolver := &mockResolver{
+		resolveLabelFn: func(ctx context.Context, projectID, input string) (*plane.Label, error) {
+			return &plane.Label{ID: "lbl-bug", Name: "bug"}, nil
+		},
+	}
+	args := AddLabelArgs{Identifier: "PROJ-1", Label: "bug"}
+
+	// Act
+	result, err := addLabel(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when UpdateWorkItem fails")
+	}
+}
+
+// TestAddLabel_ResolveByName — label resolved by name (not UUID).
+func TestAddLabel_ResolveByName(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	item := &plane.WorkItem{
+		ID: "wi-1", Name: "Task", SequenceID: 1,
+		Project: plane.Expandable[plane.Project]{ID: "proj-uuid"},
+		Labels:  []plane.Expandable[plane.Label]{},
+	}
+	var resolvedInput string
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			return item, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveLabelFn: func(ctx context.Context, projectID, input string) (*plane.Label, error) {
+			resolvedInput = input
+			return &plane.Label{ID: "lbl-uuid-123", Name: input}, nil
+		},
+	}
+	args := AddLabelArgs{Identifier: "PROJ-1", Label: "critical"}
+
+	// Act
+	result, err := addLabel(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if resolvedInput != "critical" {
+		t.Errorf("expected resolveLabelFn to receive 'critical', got %q", resolvedInput)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// remove_label handler tests (AGENT-34)
+// ---------------------------------------------------------------------------
+
+// TestRemoveLabel_Success — happy path: label resolved and removed.
+func TestRemoveLabel_Success(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	item := &plane.WorkItem{
+		ID: "wi-1", Name: "Task", SequenceID: 1,
+		Project: plane.Expandable[plane.Project]{ID: "proj-uuid"},
+		Labels:  []plane.Expandable[plane.Label]{{ID: "lbl-bug"}, {ID: "lbl-feature"}},
+	}
+	var capturedBody map[string]any
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedBody = body
+			return item, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveLabelFn: func(ctx context.Context, projectID, input string) (*plane.Label, error) {
+			return &plane.Label{ID: "lbl-bug", Name: "bug"}, nil
+		},
+	}
+	args := RemoveLabelArgs{Identifier: "PROJ-1", Label: "bug"}
+
+	// Act
+	result, err := removeLabel(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got error: %+v", result.Content)
+	}
+	labelIDs, ok := capturedBody["labels"].([]string)
+	if !ok {
+		t.Fatalf("labels not a []string: %T", capturedBody["labels"])
+	}
+	if len(labelIDs) != 1 || labelIDs[0] != "lbl-feature" {
+		t.Errorf("expected [lbl-feature], got %v", labelIDs)
+	}
+}
+
+// TestRemoveLabel_NotAttached — idempotent: no-op when label is absent.
+func TestRemoveLabel_NotAttached(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	item := &plane.WorkItem{
+		ID: "wi-1", Name: "Task", SequenceID: 1,
+		Project: plane.Expandable[plane.Project]{ID: "proj-uuid"},
+		Labels:  []plane.Expandable[plane.Label]{{ID: "lbl-feature"}},
+	}
+	updateCalled := false
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			updateCalled = true
+			return item, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveLabelFn: func(ctx context.Context, projectID, input string) (*plane.Label, error) {
+			return &plane.Label{ID: "lbl-bug", Name: "bug"}, nil
+		},
+	}
+	args := RemoveLabelArgs{Identifier: "PROJ-1", Label: "bug"}
+
+	// Act
+	result, err := removeLabel(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got error: %+v", result.Content)
+	}
+	if updateCalled {
+		t.Error("UpdateWorkItem must not be called when label is not attached")
+	}
+}
+
+// TestRemoveLabel_UnknownLabel — label not found in project returns error.
+func TestRemoveLabel_UnknownLabel(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	item := &plane.WorkItem{
+		ID: "wi-1", Name: "Task", SequenceID: 1,
+		Project: plane.Expandable[plane.Project]{ID: "proj-uuid"},
+	}
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveLabelFn: func(ctx context.Context, projectID, input string) (*plane.Label, error) {
+			return nil, errors.New("label not found")
+		},
+	}
+	args := RemoveLabelArgs{Identifier: "PROJ-1", Label: "nonexistent"}
+
+	// Act
+	result, err := removeLabel(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when label resolution fails")
+	}
+}
+
+// TestRemoveLabel_InvalidIdentifier — malformed identifier returns error.
+func TestRemoveLabel_InvalidIdentifier(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	client := &mockClient{}
+	resolver := &mockResolver{}
+	args := RemoveLabelArgs{Identifier: "bad", Label: "bug"}
+
+	// Act
+	result, err := removeLabel(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for invalid identifier")
+	}
+}
+
+// TestRemoveLabel_RemoveAll — removing the last label produces empty labels list.
+func TestRemoveLabel_RemoveAll(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	item := &plane.WorkItem{
+		ID: "wi-1", Name: "Task", SequenceID: 1,
+		Project: plane.Expandable[plane.Project]{ID: "proj-uuid"},
+		Labels:  []plane.Expandable[plane.Label]{{ID: "lbl-only"}},
+	}
+	var capturedBody map[string]any
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedBody = body
+			return item, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveLabelFn: func(ctx context.Context, projectID, input string) (*plane.Label, error) {
+			return &plane.Label{ID: "lbl-only", Name: "only"}, nil
+		},
+	}
+	args := RemoveLabelArgs{Identifier: "PROJ-1", Label: "only"}
+
+	// Act
+	result, err := removeLabel(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	labelIDs, ok := capturedBody["labels"].([]string)
+	if !ok {
+		t.Fatalf("labels not a []string: %T", capturedBody["labels"])
+	}
+	if len(labelIDs) != 0 {
+		t.Errorf("expected empty labels, got %v", labelIDs)
+	}
+}
+
+// TestRemoveLabel_UpdateError — client.UpdateWorkItem error is surfaced.
+func TestRemoveLabel_UpdateError(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	item := &plane.WorkItem{
+		ID: "wi-1", Name: "Task", SequenceID: 1,
+		Project: plane.Expandable[plane.Project]{ID: "proj-uuid"},
+		Labels:  []plane.Expandable[plane.Label]{{ID: "lbl-bug"}},
+	}
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			return nil, errors.New("api error")
+		},
+	}
+	resolver := &mockResolver{
+		resolveLabelFn: func(ctx context.Context, projectID, input string) (*plane.Label, error) {
+			return &plane.Label{ID: "lbl-bug", Name: "bug"}, nil
+		},
+	}
+	args := RemoveLabelArgs{Identifier: "PROJ-1", Label: "bug"}
+
+	// Act
+	result, err := removeLabel(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when UpdateWorkItem fails")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// extractLabelIDs unit tests (AGENT-34)
+// ---------------------------------------------------------------------------
+
+func TestExtractLabelIDs(t *testing.T) {
+	// Arrange: mix of expanded and non-expanded labels.
+	labels := []plane.Expandable[plane.Label]{
+		{ID: "id-1"},
+		{ID: "id-2", Val: &plane.Label{ID: "id-2", Name: "bug"}},
+		{ID: "", Val: &plane.Label{ID: "id-3", Name: "feature"}},
+		{ID: "", Val: nil},
+	}
+
+	// Act
+	ids := extractLabelIDs(labels)
+
+	// Assert
+	if len(ids) != 3 {
+		t.Fatalf("expected 3 ids, got %d: %v", len(ids), ids)
+	}
+	if ids[0] != "id-1" || ids[1] != "id-2" || ids[2] != "id-3" {
+		t.Errorf("expected [id-1 id-2 id-3], got %v", ids)
+	}
+}
+
+func TestExtractLabelIDs_Empty(t *testing.T) {
+	ids := extractLabelIDs(nil)
+	if len(ids) != 0 {
+		t.Errorf("expected empty slice for nil input, got %v", ids)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestRegisterWithDeps verifies add_label / remove_label are registered
+// ---------------------------------------------------------------------------
+
+// TestRegisterWithDeps_AddRemoveLabel — add_label and remove_label are
+// registered under the worker profile (same scope as list_labels).
+func TestRegisterWithDeps_AddRemoveLabel(t *testing.T) {
+	// Arrange
+	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
+	client := &mockClient{}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{}
+	// Worker profile — add_label and remove_label should register.
+	cfg := &config.Config{PlaneMCPProfile: "worker"}
+
+	// Act
+	registerWithDeps(server, client, resolver, formatter, cfg)
+	// No panic = success (the SDK panics if a tool with a bad name is added).
 }
