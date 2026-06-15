@@ -912,7 +912,7 @@ func assignWorkItem(ctx context.Context, args AssignWorkItemArgs, client planeCl
 
 	currentIDs := extractAssigneeIDs(item.Assignees)
 
-	var newIDs []string
+	newIDs := make([]string, 0, len(currentIDs)+len(resolved))
 	switch mode {
 	case "set":
 		for _, m := range resolved {
@@ -951,7 +951,14 @@ func assignWorkItem(ctx context.Context, args AssignWorkItemArgs, client planeCl
 	for _, m := range resolved {
 		names = append(names, m.DisplayName)
 	}
-	return toolText(fmt.Sprintf("Assignees %v set on %s (mode=%s).", names, args.Identifier, mode)), nil
+	switch mode {
+	case "add":
+		return toolText(fmt.Sprintf("Assignees %v added to %s.", names, args.Identifier)), nil
+	case "remove":
+		return toolText(fmt.Sprintf("Assignees %v removed from %s.", names, args.Identifier)), nil
+	default:
+		return toolText(fmt.Sprintf("Assignees %v set on %s.", names, args.Identifier)), nil
+	}
 }
 
 // createTaskInputSchema builds the JSON Schema for the create_task tool.
@@ -970,6 +977,32 @@ func createTaskInputSchema() *jsonschema.Schema {
 	if err != nil {
 		// Should never happen for a well-known struct.
 		panic(fmt.Sprintf("create_task: failed to build input schema: %v", err))
+	}
+	return schema
+}
+
+// assignWorkItemInputSchema builds the JSON Schema for the assign_work_item tool.
+// It overrides the FlexibleStringSlice type to accept "string" in addition
+// to "null" and "array", so that MCP clients which serialise array
+// arguments as JSON strings (e.g. "[\"uuid\"]") pass schema validation.
+// It also constrains mode to the three valid values.
+func assignWorkItemInputSchema() *jsonschema.Schema {
+	schema, err := jsonschema.For[AssignWorkItemArgs](&jsonschema.ForOptions{
+		TypeSchemas: map[reflect.Type]*jsonschema.Schema{
+			reflect.TypeFor[FlexibleStringSlice](): {
+				Types: []string{"null", "array", "string"},
+				Items: &jsonschema.Schema{Type: "string"},
+			},
+		},
+	})
+	if err != nil {
+		panic(fmt.Sprintf("assign_work_item: failed to build input schema: %v", err))
+	}
+	// Constrain mode to the three valid values.
+	for name, prop := range schema.Properties {
+		if name == "mode" {
+			prop.Enum = []any{"set", "add", "remove"}
+		}
 	}
 	return schema
 }
@@ -1038,6 +1071,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "assign_work_item",
 			Description: "Set, add, or remove assignees on a work item by user name, display name, email, or ID. Mode 'set' replaces all assignees, 'add' appends, 'remove' removes. An empty assignees list with mode 'set' clears all assignees.",
+			InputSchema: assignWorkItemInputSchema(),
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args AssignWorkItemArgs) (*mcp.CallToolResult, any, error) {
 			result, err := assignWorkItem(ctx, args, client, resolver)
 			return result, nil, err

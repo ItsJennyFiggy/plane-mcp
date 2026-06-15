@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -3354,6 +3355,15 @@ func TestAssignWorkItem_Set_Clear(t *testing.T) {
 	if len(assigneeIDs) != 0 {
 		t.Errorf("expected empty slice, got %v", assigneeIDs)
 	}
+
+	// Verify the marshaled JSON sends "assignees":[] not "assignees":null.
+	b, err := json.Marshal(capturedBody)
+	if err != nil {
+		t.Fatalf("failed to marshal captured body: %v", err)
+	}
+	if !bytes.Contains(b, []byte(`"assignees":[]`)) {
+		t.Errorf("expected JSON to contain \"assignees\":[], got %s", string(b))
+	}
 }
 
 func TestAssignWorkItem_Add_Success(t *testing.T) {
@@ -3438,6 +3448,56 @@ func TestAssignWorkItem_Add_Idempotent(t *testing.T) {
 	}
 	if len(ids) != 1 || ids[0] != "mem-existing" {
 		t.Errorf("expected [mem-existing] (no duplicate), got %v", ids)
+	}
+}
+
+func TestAssignWorkItem_Add_ToEmpty(t *testing.T) {
+	ctx := context.Background()
+	item := &plane.WorkItem{
+		ID: "wi-1", Name: "Task", SequenceID: 1,
+		Project:   plane.Expandable[plane.Project]{ID: "proj-uuid"},
+		Assignees: []plane.Expandable[plane.Member]{},
+	}
+	var capturedBody map[string]any
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedBody = body
+			return item, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveMemberFn: func(ctx context.Context, input string) (*plane.Member, error) {
+			return &plane.Member{ID: "mem-new", DisplayName: "Charlie"}, nil
+		},
+	}
+	args := AssignWorkItemArgs{Identifier: "PROJ-1", Assignees: FlexibleStringSlice{"charlie"}, Mode: "add"}
+
+	result, err := assignWorkItem(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got error: %+v", result.Content)
+	}
+
+	ids, ok := capturedBody["assignees"].([]string)
+	if !ok {
+		t.Fatalf("assignees not a []string: %T", capturedBody["assignees"])
+	}
+	if len(ids) != 1 || ids[0] != "mem-new" {
+		t.Errorf("expected [mem-new], got %v", ids)
+	}
+
+	// Verify the marshaled JSON sends "assignees":["mem-new"] not null.
+	b, err := json.Marshal(capturedBody)
+	if err != nil {
+		t.Fatalf("failed to marshal captured body: %v", err)
+	}
+	if !bytes.Contains(b, []byte(`"assignees":["mem-new"]`)) {
+		t.Errorf("expected JSON to contain \"assignees\":[\"mem-new\"], got %s", string(b))
 	}
 }
 
