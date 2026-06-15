@@ -2177,12 +2177,148 @@ func TestCreateTask_SchemaRequiredList(t *testing.T) {
 	}
 
 	// Verify optional fields are NOT in required.
-	for _, opt := range []string{"description", "priority", "assignees", "labels", "module"} {
+	for _, opt := range []string{"description", "priority", "assignees", "labels", "module", "parent"} {
 		for _, r := range required {
 			if r == opt {
 				t.Errorf("%q should be optional but is in required list", opt)
 			}
 		}
+	}
+}
+
+// TestCreateTask_WithParent — parent identifier resolves to UUID and body includes it.
+func TestCreateTask_WithParent(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	parentItem := &plane.WorkItem{ID: "parent-uuid", Name: "Parent Task", SequenceID: 6}
+	created := &plane.WorkItem{ID: "wi-child", Name: "Child Task", SequenceID: 30}
+	var capturedBody map[string]any
+	client := &mockClient{
+		createWorkItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedBody = body
+			return created, nil
+		},
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			if projectIdentifier != "EXEC" || sequenceID != 6 {
+				t.Errorf("GetWorkItemByIdentifier called with %q / %d, want EXEC / 6", projectIdentifier, sequenceID)
+			}
+			return parentItem, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "My Project"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: Child Task\n", nil
+		},
+	}
+	args := CreateTaskArgs{
+		Project: "My Project",
+		Name:    "Child Task",
+		Parent:  "EXEC-6",
+	}
+
+	// Act
+	result, err := createTask(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got error: %+v", result.Content)
+	}
+	parentID, ok := capturedBody["parent"].(string)
+	if !ok {
+		t.Fatalf("body[\"parent\"] missing or not string: %v", capturedBody["parent"])
+	}
+	if parentID != "parent-uuid" {
+		t.Errorf("body[\"parent\"] = %q, want %q", parentID, "parent-uuid")
+	}
+}
+
+// TestCreateTask_WithoutParent — no parent arg = backward compat, no 'parent' in body.
+func TestCreateTask_WithoutParent(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	created := &plane.WorkItem{ID: "wi-noparent", Name: "No Parent Task", SequenceID: 31}
+	var capturedBody map[string]any
+	client := &mockClient{
+		createWorkItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedBody = body
+			return created, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "My Project"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: No Parent Task\n", nil
+		},
+	}
+	args := CreateTaskArgs{
+		Project: "My Project",
+		Name:    "No Parent Task",
+		// Parent intentionally zero-value
+	}
+
+	// Act
+	result, err := createTask(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got error: %+v", result.Content)
+	}
+	if _, ok := capturedBody["parent"]; ok {
+		t.Error("body[\"parent\"] should not be present when Parent is empty")
+	}
+}
+
+// TestCreateTask_InvalidParent — non-identifier string returns clear error.
+func TestCreateTask_InvalidParent(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	client := &mockClient{
+		// getWorkItemByIdentifierFn intentionally nil — must not be called.
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "My Project"}, nil
+		},
+	}
+	formatter := &mockFormatter{}
+	args := CreateTaskArgs{
+		Project: "My Project",
+		Name:    "Bad Parent Task",
+		Parent:  "not-an-identifier",
+	}
+
+	// Act
+	result, err := createTask(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected IsError=true for invalid parent identifier")
+	}
+	// Check that the error message mentions the invalid identifier.
+	content := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(content, "invalid parent identifier") {
+		t.Errorf("expected error message to contain 'invalid parent identifier', got: %q", content)
+	}
+	if !strings.Contains(content, "not-an-identifier") {
+		t.Errorf("expected error message to contain the bad identifier, got: %q", content)
 	}
 }
 
