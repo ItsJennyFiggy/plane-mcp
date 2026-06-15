@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.7.0...v1.8.0) (2026-06-15)
+
+
+### Features
+
+* **tools:** add add_label and remove_label MCP tools ([#25](https://github.com/ItsJennyFiggy/plane-mcp/issues/25)) ([2df1574](https://github.com/ItsJennyFiggy/plane-mcp/commit/2df1574458045d4bbbe4cf85590b786e606ee13e))
+
 ## [1.7.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.6.2...v1.7.0) (2026-06-14)
 
 
