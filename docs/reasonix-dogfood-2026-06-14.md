@@ -78,6 +78,22 @@ MCP suffers from entirely.
   defaulting to Backlog all clean.
 - `ping`, `get_work_item` — fine for connectivity / titles.
 
+## Live run validation (reasonix v1.7.0 → plane-mcp, 2026-06-14)
+
+First real end-to-end exercise of the bridge: `reasonix run` (headless, `full`
+profile, `deepseek-v4-pro` via OpenCode Zen Go) was asked to create a ticket and
+clone a repo. Both succeeded autonomously:
+
+- **create_task via the stdio plugin worked** — reasonix launched `plane-mcp` as a
+  subprocess, env passed through (PLANE_API_KEY/BASE_URL/WORKSPACE_SLUG/PROFILE),
+  and it created **ASBX-24**. Confirms the MCP bridge + env inheritance (EXEC-8).
+- Used `PLANE_MCP_PROFILE=full` so `create_task` was exposed; still worth confirming
+  the `worker` profile *excludes* it (AGENT-11 scoping).
+- Cost/cache for the run: 10 steps · 105,216 cache-hit / 24,342 miss tokens
+  (~81% hit) · ¥0.031 (~$0.004). Prefix-cache thesis holds even on a near-cold run.
+- reasonix's own readiness guard blocked a premature final-answer once (open todo) —
+  a useful built-in failsafe (relevant to the EXEC failsafe-wrapper work).
+
 ## Tickets created this session
 - EXEC-6 (parent) + EXEC-7..11 (sub-tasks) + EXEC-12 (orchestrator stub) — `role:executor`/`role:orchestrator`.
 - AGENT-28 (GAP-1), AGENT-29 (GAP-2), AGENT-30 (GAP-3, since implemented), AGENT-31 (GAP-5), AGENT-32 (GAP-6) — `repo:plane-mcp`.
