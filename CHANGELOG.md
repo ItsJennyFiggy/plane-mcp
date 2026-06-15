@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.9.0...v1.10.0) (2026-06-15)
+
+
+### Features
+
+* **tools:** add assign_work_item tool for assignee management ([#34](https://github.com/ItsJennyFiggy/plane-mcp/issues/34)) ([3cb68bc](https://github.com/ItsJennyFiggy/plane-mcp/commit/3cb68bc881a37f961c5bddae0afa177e6c88d609))
+
 ## [1.9.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.8.1...v1.9.0) (2026-06-15)
 
 
