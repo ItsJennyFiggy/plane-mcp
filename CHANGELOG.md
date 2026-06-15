@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.9.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.8.1...v1.9.0) (2026-06-15)
+
+
+### Features
+
+* add list_projects tool ([#32](https://github.com/ItsJennyFiggy/plane-mcp/issues/32)) ([47c1128](https://github.com/ItsJennyFiggy/plane-mcp/commit/47c11287acf663c576650e41b90153dbfbd090f0))
+* **create_task:** add optional parent parameter for sub-issue creation ([#31](https://github.com/ItsJennyFiggy/plane-mcp/issues/31)) ([718fe75](https://github.com/ItsJennyFiggy/plane-mcp/commit/718fe75532bdf6a39263642d3f4d3a774c53e9b0))
+
+
+### Bug Fixes
+
+* **find_my_work:** make project and state_group optional ([#30](https://github.com/ItsJennyFiggy/plane-mcp/issues/30)) ([1aff8a3](https://github.com/ItsJennyFiggy/plane-mcp/commit/1aff8a371a9a041858579c045cbc644b3f448f59))
+
 ## [1.8.1](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.8.0...v1.8.1) (2026-06-15)
 
 
