@@ -475,6 +475,10 @@ func TestToolText(t *testing.T) {
 // Mock implementations for interface-based handler tests
 // ---------------------------------------------------------------------------
 
+// strPtr returns a pointer to the given string — useful for building
+// FindMyWorkArgs literals with optional *string fields.
+func strPtr(s string) *string { return &s }
+
 // mockClient is a test double for planeClient.
 type mockClient struct {
 	listProjectsFn            func(ctx context.Context) ([]plane.Project, error)
@@ -1109,7 +1113,7 @@ func TestFindMyWork_WithProject(t *testing.T) {
 			return "- name: My Task\n", nil
 		},
 	}
-	args := FindMyWorkArgs{Project: "Alpha"}
+	args := FindMyWorkArgs{Project: strPtr("Alpha")}
 
 	// Act
 	result, err := findMyWork(ctx, args, client, resolver, formatter)
@@ -1137,7 +1141,7 @@ func TestFindMyWork_WithProjectResolveError(t *testing.T) {
 		},
 	}
 	formatter := &mockFormatter{}
-	args := FindMyWorkArgs{Project: "UNKNOWN"}
+	args := FindMyWorkArgs{Project: strPtr("UNKNOWN")}
 
 	// Act
 	result, err := findMyWork(ctx, args, client, resolver, formatter)
@@ -1177,6 +1181,147 @@ func TestFindMyWork_ListProjectsError(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Error("expected IsError=true when ListProjects fails")
+	}
+}
+
+// TestFindMyWork_NoFilter — empty args returns all assigned work across all projects.
+func TestFindMyWork_NoFilter(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	items := []plane.WorkItem{
+		{ID: "wi-1", Name: "Task One", SequenceID: 1},
+		{ID: "wi-2", Name: "Task Two", SequenceID: 2},
+	}
+	client := &mockClient{
+		listProjectsFn: func(ctx context.Context) ([]plane.Project, error) {
+			return []plane.Project{
+				{ID: "proj-1", Name: "Alpha", Identifier: "ALP"},
+				{ID: "proj-2", Name: "Beta", Identifier: "BET"},
+			}, nil
+		},
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			// Verify no state_group filter is present
+			if _, ok := params["state_group"]; ok {
+				t.Error("state_group param should not be set when StateGroup is nil")
+			}
+			// Verify assignee is set
+			if params["assignees"] != "user-uuid" {
+				t.Errorf("expected assignees=user-uuid, got %q", params["assignees"])
+			}
+			return items, nil
+		},
+	}
+	resolver := &mockResolver{
+		getCallerIDFn: func(ctx context.Context) (string, error) {
+			return "user-uuid", nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
+			return "- name: Task One\n- name: Task Two\n", nil
+		},
+	}
+	args := FindMyWorkArgs{} // no filters
+
+	// Act
+	result, err := findMyWork(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got: %+v", result.Content)
+	}
+}
+
+// TestFindMyWork_StateGroupOnly filters by state_group across all projects
+// when no project is specified.
+func TestFindMyWork_StateGroupOnly(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	items := []plane.WorkItem{{ID: "wi-1", Name: "In Progress Task", SequenceID: 1}}
+	client := &mockClient{
+		listProjectsFn: func(ctx context.Context) ([]plane.Project, error) {
+			return []plane.Project{{ID: "proj-1", Name: "Alpha", Identifier: "ALP"}}, nil
+		},
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			if params["state_group"] != "in_progress" {
+				t.Errorf("expected state_group=in_progress, got %q", params["state_group"])
+			}
+			return items, nil
+		},
+	}
+	resolver := &mockResolver{
+		getCallerIDFn: func(ctx context.Context) (string, error) {
+			return "user-uuid", nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
+			return "- name: In Progress Task\n", nil
+		},
+	}
+	args := FindMyWorkArgs{StateGroup: strPtr("in_progress")}
+
+	// Act
+	result, err := findMyWork(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got: %+v", result.Content)
+	}
+}
+
+// TestFindMyWork_BothFilters scopes work items to a specific project and state_group.
+func TestFindMyWork_BothFilters(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	items := []plane.WorkItem{{ID: "wi-1", Name: "Specific Task", SequenceID: 1}}
+	client := &mockClient{
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			if projectID != "proj-alpha" {
+				t.Errorf("expected projectID=proj-alpha, got %q", projectID)
+			}
+			if params["state_group"] != "completed" {
+				t.Errorf("expected state_group=completed, got %q", params["state_group"])
+			}
+			return items, nil
+		},
+	}
+	resolver := &mockResolver{
+		getCallerIDFn: func(ctx context.Context) (string, error) {
+			return "user-uuid", nil
+		},
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			if input != "Alpha" {
+				t.Errorf("expected project input 'Alpha', got %q", input)
+			}
+			return &plane.Project{ID: "proj-alpha", Name: "Alpha", Identifier: "ALP"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
+			return "- name: Specific Task\n", nil
+		},
+	}
+	args := FindMyWorkArgs{
+		Project:    strPtr("Alpha"),
+		StateGroup: strPtr("completed"),
+	}
+
+	// Act
+	result, err := findMyWork(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got: %+v", result.Content)
 	}
 }
 
