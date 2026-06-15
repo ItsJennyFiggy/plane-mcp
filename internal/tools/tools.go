@@ -438,6 +438,7 @@ type CreateTaskArgs struct {
 	Assignees   FlexibleStringSlice `json:"assignees,omitempty"`
 	Labels      FlexibleStringSlice `json:"labels,omitempty"`
 	Module      string              `json:"module,omitempty"`
+	Parent      string              `json:"parent,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -619,6 +620,21 @@ func createTask(ctx context.Context, args CreateTaskArgs, client planeClient, re
 		}
 	}
 
+	// Resolve the parent work item (if any). The parent is identified by a
+	// project-prefixed identifier like "EXEC-6". We parse it and fetch the
+	// work item to obtain its UUID, which Plane's API expects in body["parent"].
+	var parentItem *plane.WorkItem
+	if args.Parent != "" {
+		parentProjID, parentSeqID, err := parseIdentifier(args.Parent)
+		if err != nil {
+			return toolError(fmt.Sprintf("invalid parent identifier %q: %v", args.Parent, err)), nil
+		}
+		parentItem, err = client.GetWorkItemByIdentifier(ctx, parentProjID, parentSeqID)
+		if err != nil {
+			return toolError(fmt.Sprintf("failed to resolve parent work item %q: %v", args.Parent, err)), nil
+		}
+	}
+
 	// Resolve assignees — skip failures with a warning.
 	var assigneeIDs []string
 	for _, a := range args.Assignees {
@@ -656,6 +672,9 @@ func createTask(ctx context.Context, args CreateTaskArgs, client planeClient, re
 	}
 	if len(labelIDs) > 0 {
 		body["labels"] = labelIDs
+	}
+	if parentItem != nil {
+		body["parent"] = parentItem.ID
 	}
 
 	created, err := client.CreateWorkItem(ctx, projectID, body)
