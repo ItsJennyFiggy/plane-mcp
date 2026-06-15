@@ -8,6 +8,7 @@ import (
 	"log"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -416,6 +417,18 @@ type ListLabelsArgs struct {
 	Project string `json:"project"`
 }
 
+// AddLabelArgs are the arguments for the add_label tool.
+type AddLabelArgs struct {
+	Identifier string `json:"identifier"`
+	Label      string `json:"label"`
+}
+
+// RemoveLabelArgs are the arguments for the remove_label tool.
+type RemoveLabelArgs struct {
+	Identifier string `json:"identifier"`
+	Label      string `json:"label"`
+}
+
 // CreateTaskArgs are the arguments for the create_task tool.
 type CreateTaskArgs struct {
 	Project     string              `json:"project"`
@@ -688,10 +701,107 @@ func listLabels(ctx context.Context, args ListLabelsArgs, client planeClient, re
 
 	var b strings.Builder
 	for _, lbl := range labels {
-		fmt.Fprintf(&b, "- name: %q\n  color: %q\n", lbl.Name, lbl.Color)
+		fmt.Fprintf(&b, "- id: %q\n  name: %q\n  color: %q\n", lbl.ID, lbl.Name, lbl.Color)
 	}
 
 	return toolText(b.String()), nil
+}
+
+// extractLabelIDs returns the ID strings from a slice of Expandable[Label],
+// handling both expanded (Val != nil) and non-expanded (ID only) entries.
+// extractLabelIDs returns the ID strings from a slice of Expandable[Label],
+// handling both expanded (Val != nil) and non-expanded (ID only) entries.
+func extractLabelIDs(labels []plane.Expandable[plane.Label]) []string {
+	ids := make([]string, 0, len(labels))
+	for _, l := range labels {
+		if l.Val != nil {
+			ids = append(ids, l.Val.ID)
+		} else if l.ID != "" {
+			ids = append(ids, l.ID)
+		}
+	}
+	return ids
+}
+
+// addLabel implements the add_label tool logic.
+//
+// Non-atomicity note: because Plane has no atomic add/remove-label endpoint,
+// this handler uses GET → mutate → PATCH-full-array. If two concurrent callers
+// modify labels on the same work item, the later PATCH replaces the entire
+// labels array and may silently overwrite the earlier change.
+func addLabel(ctx context.Context, args AddLabelArgs, client planeClient, resolver planeResolver) (*mcp.CallToolResult, error) {
+	projIdentifier, seqID, err := parseIdentifier(args.Identifier)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+
+	item, err := client.GetWorkItemByIdentifier(ctx, projIdentifier, seqID)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
+	}
+
+	projectID := item.Project.ID
+	if item.Project.Val != nil {
+		projectID = item.Project.Val.ID
+	}
+
+	label, err := resolver.ResolveLabel(ctx, projectID, args.Label)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to resolve label %q: %v", args.Label, err)), nil
+	}
+
+	currentIDs := extractLabelIDs(item.Labels)
+	if slices.Contains(currentIDs, label.ID) {
+		return toolText(fmt.Sprintf("Label %q is already attached to %s — no-op.", label.Name, args.Identifier)), nil
+	}
+
+	newIDs := append(currentIDs, label.ID)
+	if _, err := client.UpdateWorkItem(ctx, projectID, item.ID, map[string]any{"labels": newIDs}); err != nil {
+		return toolError(fmt.Sprintf("failed to attach label: %v", err)), nil
+	}
+
+	return toolText(fmt.Sprintf("Label %q attached to %s.", label.Name, args.Identifier)), nil
+}
+
+// removeLabel implements the remove_label tool logic.
+func removeLabel(ctx context.Context, args RemoveLabelArgs, client planeClient, resolver planeResolver) (*mcp.CallToolResult, error) {
+	projIdentifier, seqID, err := parseIdentifier(args.Identifier)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+
+	item, err := client.GetWorkItemByIdentifier(ctx, projIdentifier, seqID)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
+	}
+
+	projectID := item.Project.ID
+	if item.Project.Val != nil {
+		projectID = item.Project.Val.ID
+	}
+
+	label, err := resolver.ResolveLabel(ctx, projectID, args.Label)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to resolve label %q: %v", args.Label, err)), nil
+	}
+
+	currentIDs := extractLabelIDs(item.Labels)
+	if !slices.Contains(currentIDs, label.ID) {
+		return toolText(fmt.Sprintf("Label %q is not attached to %s — no-op.", label.Name, args.Identifier)), nil
+	}
+
+	// Build a new slice excluding the target label.
+	newIDs := make([]string, 0, len(currentIDs))
+	for _, id := range currentIDs {
+		if id != label.ID {
+			newIDs = append(newIDs, id)
+		}
+	}
+	if _, err := client.UpdateWorkItem(ctx, projectID, item.ID, map[string]any{"labels": newIDs}); err != nil {
+		return toolError(fmt.Sprintf("failed to detach label: %v", err)), nil
+	}
+
+	return toolText(fmt.Sprintf("Label %q removed from %s.", label.Name, args.Identifier)), nil
 }
 
 // createTaskInputSchema builds the JSON Schema for the create_task tool.
@@ -737,9 +847,29 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 	if shouldRegister("list_labels", workerPlannerFull, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "list_labels",
-			Description: "List all labels in a project, returning each label's name and color.",
+			Description: "List all labels in a project, returning each label's id, name, and color.",
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args ListLabelsArgs) (*mcp.CallToolResult, any, error) {
 			result, err := listLabels(ctx, args, client, resolver)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("add_label", workerPlannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "add_label",
+			Description: "Attach a label (by name or id) to a work item. Idempotent — returns success if the label is already attached.",
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args AddLabelArgs) (*mcp.CallToolResult, any, error) {
+			result, err := addLabel(ctx, args, client, resolver)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("remove_label", workerPlannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "remove_label",
+			Description: "Detach a label (by name or id) from a work item. Idempotent — returns success if the label is already absent.",
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args RemoveLabelArgs) (*mcp.CallToolResult, any, error) {
+			result, err := removeLabel(ctx, args, client, resolver)
 			return result, nil, err
 		})
 	}
