@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/ItsJennyFiggy/plane-mcp/internal/plane"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"gopkg.in/yaml.v3"
 )
 
 // ---------------------------------------------------------------------------
@@ -37,6 +39,7 @@ type planeClient interface {
 	AddWorkItemsToModule(ctx context.Context, projectID, moduleID string, workItemIDs []string) error
 	ListLabels(ctx context.Context, projectID string) ([]plane.Label, error)
 	ListStates(ctx context.Context, projectID string) ([]plane.State, error)
+	ListComments(ctx context.Context, projectID, workItemID string) ([]plane.Comment, error)
 }
 
 // planeResolver abstracts all name-resolution calls made by the tool handlers.
@@ -440,6 +443,11 @@ type RemoveLabelArgs struct {
 	Label      string `json:"label"`
 }
 
+// ListCommentsArgs are the arguments for the list_comments tool.
+type ListCommentsArgs struct {
+	Identifier string `json:"identifier"`
+}
+
 // AssignWorkItemArgs are the arguments for the assign_work_item tool.
 type AssignWorkItemArgs struct {
 	Identifier string              `json:"identifier"`
@@ -558,6 +566,66 @@ func getWorkItem(ctx context.Context, args GetWorkItemArgs, client planeClient, 
 	}
 
 	return toolText(yaml), nil
+}
+
+// listComments implements the list_comments tool logic.
+func listComments(ctx context.Context, args ListCommentsArgs, client planeClient) (*mcp.CallToolResult, error) {
+	projIdentifier, seqID, err := parseIdentifier(args.Identifier)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+
+	item, err := client.GetWorkItemByIdentifier(ctx, projIdentifier, seqID)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
+	}
+
+	projectID := item.Project.ID
+	workItemID := item.ID
+
+	comments, err := client.ListComments(ctx, projectID, workItemID)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to list comments: %v", err)), nil
+	}
+
+	if len(comments) == 0 {
+		return toolText("[]"), nil
+	}
+
+	// Sort by CreatedAt ascending
+	sort.Slice(comments, func(i, j int) bool {
+		return comments[i].CreatedAt < comments[j].CreatedAt
+	})
+
+	type commentOut struct {
+		Author    string `yaml:"author"`
+		CreatedAt string `yaml:"created_at"`
+		Body      string `yaml:"body"`
+	}
+
+	out := make([]commentOut, len(comments))
+	for i, c := range comments {
+		author := c.ActorDetail.DisplayName
+		if author == "" {
+			author = strings.TrimSpace(c.ActorDetail.FirstName + " " + c.ActorDetail.LastName)
+		}
+		if author == "" {
+			author = "Unknown"
+		}
+
+		out[i] = commentOut{
+			Author:    author,
+			CreatedAt: c.CreatedAt,
+			Body:      plane.ConvertHTMLToMarkdown(c.CommentHTML),
+		}
+	}
+
+	yamlBytes, err := yaml.Marshal(out)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to marshal comments: %v", err)), nil
+	}
+
+	return toolText(string(yamlBytes)), nil
 }
 
 // reportProgress implements the report_progress tool logic.
@@ -1367,6 +1435,16 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 			Description: "Search work items across the workspace by a text query, with optional project filter and limit.",
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args SearchWorkItemsArgs) (*mcp.CallToolResult, any, error) {
 			result, err := searchWorkItems(ctx, args, client, resolver, formatter)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("list_comments", plannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "list_comments",
+			Description: "List all comments on a work item by its project-prefixed identifier (e.g. PROJ-123), sorted by creation time ascending. Returns YAML with author, created_at, and body (HTML converted to Markdown) for each comment.",
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args ListCommentsArgs) (*mcp.CallToolResult, any, error) {
+			result, err := listComments(ctx, args, client)
 			return result, nil, err
 		})
 	}

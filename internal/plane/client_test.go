@@ -990,3 +990,107 @@ func TestClientSearchWorkItems(t *testing.T) {
 		}
 	})
 }
+
+func TestClientListComments(t *testing.T) {
+	cfg := &config.Config{
+		PlaneAPIKey:        "test-key",
+		PlaneBaseURL:       "https://plane.example.com",
+		PlaneWorkspaceSlug: "test-workspace",
+	}
+
+	t.Run("Happy path parses comments response", func(t *testing.T) {
+		// Arrange
+		client := NewClient(cfg)
+		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+			expectedPath := "/api/v1/workspaces/test-workspace/projects/proj-1/work-items/wi-42/comments/"
+			if req.URL.Path != expectedPath {
+				t.Errorf("expected path '%s', got '%s'", expectedPath, req.URL.Path)
+			}
+			if req.Method != "GET" {
+				t.Errorf("expected GET, got %s", req.Method)
+			}
+
+			body := `{
+				"results": [
+					{
+						"id": "comment-1",
+						"created_at": "2025-06-01T10:00:00Z",
+						"comment_html": "<p>Hello <strong>world</strong></p>",
+						"actor_detail": {
+							"id": "user-1",
+							"display_name": "Alice",
+							"first_name": "Alice",
+							"last_name": "Smith"
+						}
+					},
+					{
+						"id": "comment-2",
+						"created_at": "2025-06-01T11:00:00Z",
+						"comment_html": "<p>Second comment</p>",
+						"actor_detail": {
+							"id": "user-2",
+							"display_name": "",
+							"first_name": "Bob",
+							"last_name": "Jones"
+						}
+					}
+				],
+				"next_cursor": "",
+				"next_page_results": false
+			}`
+
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		})
+
+		// Act
+		comments, err := client.ListComments(context.Background(), "proj-1", "wi-42")
+
+		// Assert
+		if err != nil {
+			t.Fatalf("ListComments failed: %v", err)
+		}
+		if len(comments) != 2 {
+			t.Fatalf("expected 2 comments, got %d", len(comments))
+		}
+		if comments[0].ID != "comment-1" {
+			t.Errorf("expected ID 'comment-1', got '%s'", comments[0].ID)
+		}
+		if comments[0].CommentHTML != "<p>Hello <strong>world</strong></p>" {
+			t.Errorf("unexpected comment_html: %s", comments[0].CommentHTML)
+		}
+		if comments[0].ActorDetail.DisplayName != "Alice" {
+			t.Errorf("expected actor display_name 'Alice', got '%s'", comments[0].ActorDetail.DisplayName)
+		}
+		if comments[1].ID != "comment-2" {
+			t.Errorf("expected ID 'comment-2', got '%s'", comments[1].ID)
+		}
+		if comments[1].ActorDetail.FirstName != "Bob" || comments[1].ActorDetail.LastName != "Jones" {
+			t.Errorf("unexpected actor detail: %+v", comments[1].ActorDetail)
+		}
+	})
+
+	t.Run("Error path propagates error", func(t *testing.T) {
+		// Arrange
+		client := NewClient(cfg)
+		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: 404,
+				Body:       io.NopCloser(strings.NewReader("not found")),
+			}, nil
+		})
+
+		// Act
+		_, err := client.ListComments(context.Background(), "proj-1", "wi-42")
+
+		// Assert
+		if err == nil {
+			t.Fatal("expected error on 404, got nil")
+		}
+		if !strings.Contains(err.Error(), "404") {
+			t.Errorf("expected error message to mention 404, got: %v", err)
+		}
+	})
+}

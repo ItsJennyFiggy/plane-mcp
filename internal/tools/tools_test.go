@@ -494,6 +494,7 @@ type mockClient struct {
 	addWorkItemsToModuleFn    func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error
 	listLabelsFn              func(ctx context.Context, projectID string) ([]plane.Label, error)
 	listStatesFn              func(ctx context.Context, projectID string) ([]plane.State, error)
+	listCommentsFn            func(ctx context.Context, projectID, workItemID string) ([]plane.Comment, error)
 }
 
 func (m *mockClient) ListProjects(ctx context.Context) ([]plane.Project, error) {
@@ -528,6 +529,10 @@ func (m *mockClient) ListLabels(ctx context.Context, projectID string) ([]plane.
 }
 func (m *mockClient) ListStates(ctx context.Context, projectID string) ([]plane.State, error) {
 	return m.listStatesFn(ctx, projectID)
+}
+
+func (m *mockClient) ListComments(ctx context.Context, projectID, workItemID string) ([]plane.Comment, error) {
+	return m.listCommentsFn(ctx, projectID, workItemID)
 }
 
 // mockResolver is a test double for planeResolver.
@@ -4983,5 +4988,174 @@ func TestSearchWorkItems_LimitNegative(t *testing.T) {
 	}
 	if capturedLimit != "10" {
 		t.Errorf("expected default limit=10 for negative input, got %q", capturedLimit)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// list_comments tests
+// ---------------------------------------------------------------------------
+
+// TestListComments_Success — happy path: comments are fetched and formatted.
+func TestListComments_Success(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{
+				ID: "wi-1",
+				Project: plane.Expandable[plane.Project]{
+					ID: "proj-uuid",
+				},
+			}, nil
+		},
+		listCommentsFn: func(ctx context.Context, projectID, workItemID string) ([]plane.Comment, error) {
+			return []plane.Comment{
+				{
+					ID:          "comment-1",
+					CreatedAt:   "2025-06-01T10:00:00Z",
+					CommentHTML: "<p>Hello <strong>world</strong></p>",
+					ActorDetail: plane.CommentActorDetail{
+						ID:          "user-1",
+						DisplayName: "Alice",
+						FirstName:   "Alice",
+						LastName:    "Smith",
+					},
+				},
+				{
+					ID:          "comment-2",
+					CreatedAt:   "2025-06-01T09:00:00Z",
+					CommentHTML: "<p>First comment</p>",
+					ActorDetail: plane.CommentActorDetail{
+						ID:        "user-2",
+						FirstName: "Bob",
+						LastName:  "Jones",
+					},
+				},
+			}, nil
+		},
+	}
+
+	args := ListCommentsArgs{Identifier: "PROJ-1"}
+	result, err := listComments(ctx, args, client)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false on success, got: %+v", result.Content)
+	}
+
+	// Verify YAML output is sorted by CreatedAt ascending
+	// comment-2 (09:00) should come before comment-1 (10:00)
+	var parsed []struct {
+		Author    string `yaml:"author"`
+		CreatedAt string `yaml:"created_at"`
+		Body      string `yaml:"body"`
+	}
+	textContent, ok := result.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected *mcp.TextContent, got %T", result.Content[0])
+	}
+	if err := yaml.Unmarshal([]byte(textContent.Text), &parsed); err != nil {
+		t.Fatalf("failed to unmarshal YAML: %v", err)
+	}
+	if len(parsed) != 2 {
+		t.Fatalf("expected 2 comments, got %d", len(parsed))
+	}
+	if parsed[0].CreatedAt != "2025-06-01T09:00:00Z" {
+		t.Errorf("expected first comment at 09:00 (sorted), got %s", parsed[0].CreatedAt)
+	}
+	if parsed[1].CreatedAt != "2025-06-01T10:00:00Z" {
+		t.Errorf("expected second comment at 10:00 (sorted), got %s", parsed[1].CreatedAt)
+	}
+	if parsed[0].Author != "Bob Jones" {
+		t.Errorf("expected author 'Bob Jones' (no display name), got '%s'", parsed[0].Author)
+	}
+	if parsed[1].Author != "Alice" {
+		t.Errorf("expected author 'Alice' (has display name), got '%s'", parsed[1].Author)
+	}
+	if parsed[1].Body != "Hello **world**" {
+		t.Errorf("expected body 'Hello **world**' (converted), got '%s'", parsed[1].Body)
+	}
+}
+
+// TestListComments_Empty — empty result returns "[]".
+func TestListComments_Empty(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{
+				ID: "wi-1",
+				Project: plane.Expandable[plane.Project]{
+					ID: "proj-uuid",
+				},
+			}, nil
+		},
+		listCommentsFn: func(ctx context.Context, projectID, workItemID string) ([]plane.Comment, error) {
+			return nil, nil
+		},
+	}
+
+	args := ListCommentsArgs{Identifier: "PROJ-1"}
+	result, err := listComments(ctx, args, client)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Error("expected IsError=false for empty result")
+	}
+	tc, ok := result.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected *mcp.TextContent, got %T", result.Content[0])
+	}
+	if tc.Text != "[]" {
+		t.Errorf("expected '[]' for empty comments, got: %s", tc.Text)
+	}
+}
+
+// TestListComments_ValidationError — invalid identifier returns tool error.
+func TestListComments_ValidationError(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{}
+	args := ListCommentsArgs{Identifier: ""}
+	result, err := listComments(ctx, args, client)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for invalid identifier")
+	}
+}
+
+// TestListComments_ClientError — client.ListComments error is surfaced as tool error.
+func TestListComments_ClientError(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{
+				ID: "wi-1",
+				Project: plane.Expandable[plane.Project]{
+					ID: "proj-uuid",
+				},
+			}, nil
+		},
+		listCommentsFn: func(ctx context.Context, projectID, workItemID string) ([]plane.Comment, error) {
+			return nil, errors.New("api error")
+		},
+	}
+
+	args := ListCommentsArgs{Identifier: "PROJ-1"}
+	result, err := listComments(ctx, args, client)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when client.ListComments returns error")
 	}
 }
