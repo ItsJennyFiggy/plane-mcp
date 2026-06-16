@@ -6384,3 +6384,407 @@ func TestRegisterWithDeps_IncludesRelationTools(t *testing.T) {
 	// Should not panic — verifies set_relation, remove_relation, list_relations register cleanly.
 	registerWithDeps(server, client, resolver, formatter, cfg)
 }
+
+// ---------------------------------------------------------------------------
+// TestSetParent — table-driven tests for set_parent
+// ---------------------------------------------------------------------------
+
+func TestSetParent_HappyPath(t *testing.T) {
+	ctx := context.Background()
+	var capturedBody map[string]any
+	var capturedWorkItemID string
+
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			if pi == "PROJ" && seq == 1 {
+				return &plane.WorkItem{ID: "wi-child", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+			}
+			return &plane.WorkItem{ID: "wi-parent", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedWorkItemID = itemID
+			capturedBody = body
+			return &plane.WorkItem{ID: "wi-child"}, nil
+		},
+	}
+	args := SetParentArgs{
+		Identifier:       "PROJ-1",
+		ParentIdentifier: "PROJ-2",
+	}
+
+	result, err := setParent(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if capturedWorkItemID != "wi-child" {
+		t.Errorf("expected workItemID='wi-child', got %q", capturedWorkItemID)
+	}
+	parentVal, ok := capturedBody["parent"]
+	if !ok || parentVal != "wi-parent" {
+		t.Errorf("expected body['parent']='wi-parent', got %v", parentVal)
+	}
+}
+
+func TestSetParent_InvalidChildIdentifier(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{}
+	args := SetParentArgs{
+		Identifier:       "invalid",
+		ParentIdentifier: "PROJ-2",
+	}
+
+	result, err := setParent(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for invalid child identifier")
+	}
+}
+
+func TestSetParent_InvalidParentIdentifier(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{ID: "wi-child", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+		},
+	}
+	args := SetParentArgs{
+		Identifier:       "PROJ-1",
+		ParentIdentifier: "invalid",
+	}
+
+	result, err := setParent(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for invalid parent identifier")
+	}
+}
+
+func TestSetParent_ChildNotFound(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return nil, errors.New("not found")
+		},
+	}
+	args := SetParentArgs{
+		Identifier:       "PROJ-99",
+		ParentIdentifier: "PROJ-2",
+	}
+
+	result, err := setParent(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when child not found")
+	}
+}
+
+func TestSetParent_ParentNotFound(t *testing.T) {
+	ctx := context.Background()
+	callCount := 0
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			callCount++
+			if callCount == 1 {
+				return &plane.WorkItem{ID: "wi-child", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+			}
+			return nil, errors.New("not found")
+		},
+	}
+	args := SetParentArgs{
+		Identifier:       "PROJ-1",
+		ParentIdentifier: "PROJ-99",
+	}
+
+	result, err := setParent(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when parent not found")
+	}
+}
+
+func TestSetParent_UpdateError(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{ID: "wi-1", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			return nil, errors.New("api error")
+		},
+	}
+	args := SetParentArgs{
+		Identifier:       "PROJ-1",
+		ParentIdentifier: "PROJ-2",
+	}
+
+	result, err := setParent(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when update fails")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestClearParent — table-driven tests for clear_parent
+// ---------------------------------------------------------------------------
+
+func TestClearParent_HappyPath(t *testing.T) {
+	ctx := context.Background()
+	var capturedBody map[string]any
+	var capturedWorkItemID string
+
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{ID: "wi-1", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedWorkItemID = itemID
+			capturedBody = body
+			return &plane.WorkItem{ID: "wi-1"}, nil
+		},
+	}
+	args := ClearParentArgs{Identifier: "PROJ-1"}
+
+	result, err := clearParent(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if capturedWorkItemID != "wi-1" {
+		t.Errorf("expected workItemID='wi-1', got %q", capturedWorkItemID)
+	}
+	parentVal, ok := capturedBody["parent"]
+	if !ok || parentVal != nil {
+		t.Errorf("expected body['parent']=nil, got %v", parentVal)
+	}
+}
+
+func TestClearParent_InvalidIdentifier(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{}
+	args := ClearParentArgs{Identifier: "invalid"}
+
+	result, err := clearParent(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for invalid identifier")
+	}
+}
+
+func TestClearParent_ItemNotFound(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return nil, errors.New("not found")
+		},
+	}
+	args := ClearParentArgs{Identifier: "PROJ-99"}
+
+	result, err := clearParent(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when item not found")
+	}
+}
+
+func TestClearParent_UpdateError(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{ID: "wi-1", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			return nil, errors.New("api error")
+		},
+	}
+	args := ClearParentArgs{Identifier: "PROJ-1"}
+
+	result, err := clearParent(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when update fails")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestListChildren — table-driven tests for list_children
+// ---------------------------------------------------------------------------
+
+func TestListChildren_HappyPath(t *testing.T) {
+	ctx := context.Background()
+
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{ID: "wi-parent", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+		},
+		listProjectsFn: func(ctx context.Context) ([]plane.Project, error) {
+			return []plane.Project{{ID: "proj-uuid", Identifier: "PROJ"}}, nil
+		},
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			return []plane.WorkItem{
+				{ID: "wi-1", Name: "Child one", SequenceID: 2, Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}},
+				{ID: "wi-2", Name: "Child two", SequenceID: 3, Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}},
+			}, nil
+		},
+	}
+	args := ListChildrenArgs{Identifier: "PROJ-1"}
+
+	result, err := listChildren(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "PROJ-2") {
+		t.Errorf("expected 'PROJ-2' in output, got: %s", text)
+	}
+	if !strings.Contains(text, "Child one") {
+		t.Errorf("expected 'Child one' in output, got: %s", text)
+	}
+	if !strings.Contains(text, "PROJ-3") {
+		t.Errorf("expected 'PROJ-3' in output, got: %s", text)
+	}
+	if !strings.Contains(text, "Child two") {
+		t.Errorf("expected 'Child two' in output, got: %s", text)
+	}
+}
+
+func TestListChildren_Empty(t *testing.T) {
+	ctx := context.Background()
+
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{ID: "wi-parent", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+		},
+		listProjectsFn: func(ctx context.Context) ([]plane.Project, error) {
+			return []plane.Project{{ID: "proj-uuid", Identifier: "PROJ"}}, nil
+		},
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			return []plane.WorkItem{}, nil
+		},
+	}
+	args := ListChildrenArgs{Identifier: "PROJ-1"}
+
+	result, err := listChildren(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if text != "[]" {
+		t.Errorf("expected '[]' for empty children, got: %s", text)
+	}
+}
+
+func TestListChildren_InvalidIdentifier(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{}
+	args := ListChildrenArgs{Identifier: "invalid"}
+
+	result, err := listChildren(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for invalid identifier")
+	}
+}
+
+func TestListChildren_ItemNotFound(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return nil, errors.New("not found")
+		},
+	}
+	args := ListChildrenArgs{Identifier: "PROJ-99"}
+
+	result, err := listChildren(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when item not found")
+	}
+}
+
+func TestListChildren_ProjectsListFails(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{ID: "wi-parent", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+		},
+		listProjectsFn: func(ctx context.Context) ([]plane.Project, error) {
+			return nil, errors.New("projects api error")
+		},
+	}
+	args := ListChildrenArgs{Identifier: "PROJ-1"}
+
+	result, err := listChildren(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when projects list fails")
+	}
+}
+
+func TestListChildren_ListWorkItemsFails(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{ID: "wi-parent", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+		},
+		listProjectsFn: func(ctx context.Context) ([]plane.Project, error) {
+			return []plane.Project{{ID: "proj-uuid", Identifier: "PROJ"}}, nil
+		},
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			return nil, errors.New("api error")
+		},
+	}
+	args := ListChildrenArgs{Identifier: "PROJ-1"}
+
+	result, err := listChildren(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when list work items fails")
+	}
+}
+
+func TestRegisterWithDeps_IncludesParentTools(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
+	client := &mockClient{}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{}
+	cfg := &config.Config{PlaneMCPProfile: "full"}
+
+	// Should not panic — verifies set_parent, clear_parent, list_children register cleanly.
+	registerWithDeps(server, client, resolver, formatter, cfg)
+}
