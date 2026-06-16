@@ -3727,6 +3727,22 @@ func TestExtractAssigneeIDs_Empty(t *testing.T) {
 // assign_work_item registration test (AGENT-57)
 // ---------------------------------------------------------------------------
 
+// TestRegisterWithDeps_ListStates — list_states must register under the worker
+// profile (same scope as list_labels, add_label, remove_label).
+func TestRegisterWithDeps_ListStates(t *testing.T) {
+	// Arrange
+	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
+	client := &mockClient{}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{}
+	// Worker profile — list_states should register.
+	cfg := &config.Config{PlaneMCPProfile: "worker"}
+
+	// Act
+	registerWithDeps(server, client, resolver, formatter, cfg)
+	// No panic = success (the SDK panics if a tool with a bad name is added).
+}
+
 // TestRegisterWithDeps_AssignWorkItem — assign_work_item must NOT register
 // under the worker profile (it is planner/planner/full only).
 func TestRegisterWithDeps_AssignWorkItem(t *testing.T) {
@@ -3755,8 +3771,8 @@ func TestListStates_Success(t *testing.T) {
 	// Arrange
 	ctx := context.Background()
 	states := []plane.State{
-		{ID: "st-1", Name: "Backlog", Group: "backlog", Color: "#cccccc", Sequence: 1},
-		{ID: "st-2", Name: "In Progress", Group: "started", Color: "#0000ff", Sequence: 2},
+		{ID: "st-1", Name: "Backlog", Group: "backlog"},
+		{ID: "st-2", Name: "In Progress", Group: "started"},
 	}
 	client := &mockClient{
 		listStatesFn: func(ctx context.Context, projectID string) ([]plane.State, error) {
@@ -3800,9 +3816,9 @@ func TestListStates_YAMLRoundTrip(t *testing.T) {
 	// Arrange
 	ctx := context.Background()
 	states := []plane.State{
-		{ID: "st-1", Name: "Backlog", Group: "backlog", Color: "#cccccc", Sequence: 1},
-		{ID: "st-2", Name: "In Progress", Group: "started", Color: "#0000ff", Sequence: 2},
-		{ID: "st-3", Name: "Done", Group: "completed", Color: "#00ff00", Sequence: 3},
+		{ID: "st-1", Name: "Backlog", Group: "backlog"},
+		{ID: "st-2", Name: "In Progress", Group: "started"},
+		{ID: "st-3", Name: "Done", Group: "completed"},
 	}
 	client := &mockClient{
 		listStatesFn: func(ctx context.Context, projectID string) ([]plane.State, error) {

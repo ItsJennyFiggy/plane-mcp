@@ -780,7 +780,7 @@ func listStates(ctx context.Context, args ListStatesArgs, client planeClient, re
 
 	var b strings.Builder
 	for _, s := range states {
-		fmt.Fprintf(&b, "- id: %q\n  name: %q\n  group: %q\n  color: %q\n  sequence: %.0f\n", s.ID, s.Name, s.Group, s.Color, s.Sequence)
+		fmt.Fprintf(&b, "- id: %q\n  name: %q\n  group: %q\n", s.ID, s.Name, s.Group)
 	}
 
 	return toolText(b.String()), nil
@@ -1080,7 +1080,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 	if shouldRegister("list_states", workerPlannerFull, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "list_states",
-			Description: "List all states in a project, returning each state's id, name, group, color, and sequence.",
+			Description: "List all states in a project, returning each state's id, name, and group.",
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args ListStatesArgs) (*mcp.CallToolResult, any, error) {
 			result, err := listStates(ctx, args, client, resolver)
 			return result, nil, err
