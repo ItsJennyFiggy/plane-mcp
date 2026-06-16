@@ -466,6 +466,9 @@ type ListWorkItemsArgs struct {
 	Type       *string             `json:"type,omitempty"`
 	Assignees  FlexibleStringSlice `json:"assignees,omitempty"`
 	Labels     FlexibleStringSlice `json:"labels,omitempty"`
+	State      *string             `json:"state,omitempty"`
+	Module     *string             `json:"module,omitempty"`
+	Limit      *int                `json:"limit,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -1019,6 +1022,24 @@ func listWorkItems(ctx context.Context, args ListWorkItemsArgs, client planeClie
 		params["type"] = *args.Type
 	}
 
+	// Resolve state name to UUID.
+	if args.State != nil && *args.State != "" {
+		state, err := resolver.ResolveState(ctx, proj.ID, *args.State)
+		if err != nil {
+			return toolError(fmt.Sprintf("failed to resolve state %q: %v", *args.State, err)), nil
+		}
+		params["state"] = state.ID
+	}
+
+	// Resolve module name to UUID.
+	if args.Module != nil && *args.Module != "" {
+		module, err := resolver.ResolveModule(ctx, proj.ID, *args.Module)
+		if err != nil {
+			return toolError(fmt.Sprintf("failed to resolve module %q: %v", *args.Module, err)), nil
+		}
+		params["module"] = module.ID
+	}
+
 	// Resolve assignee names to UUIDs.
 	if len(args.Assignees) > 0 {
 		var ids []string
@@ -1045,16 +1066,21 @@ func listWorkItems(ctx context.Context, args ListWorkItemsArgs, client planeClie
 		params["labels"] = strings.Join(ids, ",")
 	}
 
+	// Apply limit.
+	if args.Limit != nil && *args.Limit > 0 {
+		params["limit"] = strconv.Itoa(*args.Limit)
+	}
+
 	items, err := client.ListWorkItems(ctx, proj.ID, params)
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to list work items: %v", err)), nil
 	}
 
 	if len(items) == 0 {
-		return toolText("No work items found matching the criteria."), nil
+		return toolText("[]"), nil
 	}
 
-	yaml, err := formatter.FormatWorkItemsYAML(ctx, items, "summary")
+	yaml, err := formatter.FormatWorkItemsYAML(ctx, items, "summary_with_labels")
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to format work items: %v", err)), nil
 	}
@@ -1252,7 +1278,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 	if shouldRegister("list_work_items", plannerFull, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "list_work_items",
-			Description: "List work items in a project with optional filters for state group, priority, type, assignees, and labels. Assignees and labels may be specified by name or ID and are resolved automatically.",
+			Description: "List work items in a project with optional filters for state group, state, priority, type, module, assignees, labels, and limit. Assignees, labels, states, and modules may be specified by name or ID and are resolved automatically.",
 			InputSchema: listWorkItemsInputSchema(),
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args ListWorkItemsArgs) (*mcp.CallToolResult, any, error) {
 			result, err := listWorkItems(ctx, args, client, resolver, formatter)

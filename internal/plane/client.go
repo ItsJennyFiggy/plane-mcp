@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -248,6 +249,15 @@ func listAllGeneric[T any](ctx context.Context, c *Client, path string, queryPar
 	var allResults []T
 	cursor := ""
 
+	// Parse limit from query params, then remove it so it's not forwarded.
+	limit := 0
+	if limitStr, ok := queryParams["limit"]; ok {
+		if n, err := strconv.Atoi(limitStr); err == nil && n > 0 {
+			limit = n
+		}
+		delete(queryParams, "limit")
+	}
+
 	for {
 		params := make(map[string]string)
 		for k, v := range queryParams {
@@ -271,6 +281,12 @@ func listAllGeneric[T any](ctx context.Context, c *Client, path string, queryPar
 		}
 
 		allResults = append(allResults, results...)
+
+		// Apply limit: if we've reached or exceeded it, slice and stop.
+		if limit > 0 && len(allResults) >= limit {
+			allResults = allResults[:limit]
+			break
+		}
 
 		if !hasMore || nextCursor == "" {
 			break

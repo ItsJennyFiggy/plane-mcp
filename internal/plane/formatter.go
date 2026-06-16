@@ -163,6 +163,12 @@ func buildWorkItemMap(item *WorkItem, resolved *ResolvedWorkItem, detail string)
 			m["is_draft"] = resolved.IsDraft
 		}
 	}
+
+	if strings.ToLower(detail) == "full" || strings.ToLower(detail) == "summary_with_labels" {
+		if len(resolved.LabelNames) > 0 {
+			m["labels"] = resolved.LabelNames
+		}
+	}
 	return m
 }
 
