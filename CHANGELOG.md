@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.11.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.10.0...v1.11.0) (2026-06-16)
+
+
+### Features
+
+* **tools:** add get_last_comment tool (AGENT-47) ([#42](https://github.com/ItsJennyFiggy/plane-mcp/issues/42)) ([f2fa8b5](https://github.com/ItsJennyFiggy/plane-mcp/commit/f2fa8b58f822dd73b0b29ca2b71713ce9eff66bc))
+* **tools:** add list_comments tool (AGENT-46) ([#41](https://github.com/ItsJennyFiggy/plane-mcp/issues/41)) ([4613a87](https://github.com/ItsJennyFiggy/plane-mcp/commit/4613a87fddb9049fc1d66e71b1bb2b0b4d7db9d9))
+* **tools:** add list_states tool (AGENT-39) ([#36](https://github.com/ItsJennyFiggy/plane-mcp/issues/36)) ([be8024c](https://github.com/ItsJennyFiggy/plane-mcp/commit/be8024cc49aa26bd390b0d300bf88a1253f10a12))
+* **tools:** add list_work_items tool (AGENT-49) ([#38](https://github.com/ItsJennyFiggy/plane-mcp/issues/38)) ([475c6b6](https://github.com/ItsJennyFiggy/plane-mcp/commit/475c6b65a1c6c46a17853958f31745f9e0682a51))
+* **tools:** add search_work_items tool (AGENT-42) ([#40](https://github.com/ItsJennyFiggy/plane-mcp/issues/40)) ([f86dbcc](https://github.com/ItsJennyFiggy/plane-mcp/commit/f86dbcc138515cc91f71b9a7a0e9b09ffc0ce4ea))
+* **tools:** annotate plane-mcp tools with ToolAnnotations (AGENT-43) ([#44](https://github.com/ItsJennyFiggy/plane-mcp/issues/44)) ([15c85f0](https://github.com/ItsJennyFiggy/plane-mcp/commit/15c85f0e3e79380359ec0f78a7f9d3a5e5b45162))
+
+
+### Bug Fixes
+
+* **tools:** convert HTML descriptions in get_work_item (AGENT-50) ([#43](https://github.com/ItsJennyFiggy/plane-mcp/issues/43)) ([92767b7](https://github.com/ItsJennyFiggy/plane-mcp/commit/92767b7ad7d37418a645ae8ffb16100476502019))
+
 ## [1.10.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.9.0...v1.10.0) (2026-06-15)
 
 
