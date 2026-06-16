@@ -495,6 +495,7 @@ type mockClient struct {
 	listLabelsFn              func(ctx context.Context, projectID string) ([]plane.Label, error)
 	listStatesFn              func(ctx context.Context, projectID string) ([]plane.State, error)
 	listCommentsFn            func(ctx context.Context, projectID, workItemID string) ([]plane.Comment, error)
+	getLastCommentFn          func(ctx context.Context, projectID, workItemID string) (*plane.Comment, error)
 }
 
 func (m *mockClient) ListProjects(ctx context.Context) ([]plane.Project, error) {
@@ -533,6 +534,13 @@ func (m *mockClient) ListStates(ctx context.Context, projectID string) ([]plane.
 
 func (m *mockClient) ListComments(ctx context.Context, projectID, workItemID string) ([]plane.Comment, error) {
 	return m.listCommentsFn(ctx, projectID, workItemID)
+}
+
+func (m *mockClient) GetLastComment(ctx context.Context, projectID, workItemID string) (*plane.Comment, error) {
+	if m.getLastCommentFn == nil {
+		return nil, nil
+	}
+	return m.getLastCommentFn(ctx, projectID, workItemID)
 }
 
 // mockResolver is a test double for planeResolver.
@@ -5157,5 +5165,148 @@ func TestListComments_ClientError(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Error("expected IsError=true when client.ListComments returns error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// get_last_comment tests
+// ---------------------------------------------------------------------------
+
+// TestGetLastComment_Success — happy path: comment is fetched and formatted.
+func TestGetLastComment_Success(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, proj string, seq int) (*plane.WorkItem, error) {
+			if proj != "PROJ" || seq != 123 {
+				t.Errorf("unexpected GetWorkItemByIdentifier args: %s, %d", proj, seq)
+			}
+			return &plane.WorkItem{
+				ID: "wi-uuid",
+				Project: plane.Expandable[plane.Project]{
+					ID: "proj-uuid",
+				},
+			}, nil
+		},
+		getLastCommentFn: func(ctx context.Context, projectID, workItemID string) (*plane.Comment, error) {
+			if projectID != "proj-uuid" || workItemID != "wi-uuid" {
+				t.Errorf("unexpected GetLastComment args: %s, %s", projectID, workItemID)
+			}
+			return &plane.Comment{
+				ID:          "comment-uuid",
+				CommentHTML: "<p>Hello <strong>world</strong></p>",
+				CreatedAt:   "2026-06-15T18:00:00Z",
+				ActorDetail: plane.CommentActorDetail{
+					ID:          "user-1",
+					DisplayName: "Jane Doe",
+				},
+			}, nil
+		},
+	}
+
+	args := GetLastCommentArgs{Identifier: "PROJ-123"}
+	result, err := getLastComment(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected IsError=false, got error")
+	}
+
+	text := result.Content[0].(*mcp.TextContent).Text
+	var m map[string]string
+	if err := yaml.Unmarshal([]byte(text), &m); err != nil {
+		t.Fatalf("failed to unmarshal yaml output: %v", err)
+	}
+
+	if m["author"] != "Jane Doe" {
+		t.Errorf("expected author Jane Doe, got %q", m["author"])
+	}
+	if m["created_at"] != "2026-06-15T18:00:00Z" {
+		t.Errorf("expected created_at 2026-06-15T18:00:00Z, got %q", m["created_at"])
+	}
+	if m["body"] != "Hello **world**" {
+		t.Errorf("expected body 'Hello **world**', got %q", m["body"])
+	}
+}
+
+// TestGetLastComment_Empty — no comments returns "null".
+func TestGetLastComment_Empty(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, proj string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{
+				ID: "wi-uuid",
+				Project: plane.Expandable[plane.Project]{
+					ID: "proj-uuid",
+				},
+			}, nil
+		},
+		getLastCommentFn: func(ctx context.Context, projectID, workItemID string) (*plane.Comment, error) {
+			return nil, nil
+		},
+	}
+
+	args := GetLastCommentArgs{Identifier: "PROJ-123"}
+	result, err := getLastComment(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected IsError=false")
+	}
+
+	text := result.Content[0].(*mcp.TextContent).Text
+	if text != "null" {
+		t.Errorf("expected output 'null', got %q", text)
+	}
+}
+
+// TestGetLastComment_ValidationError — invalid identifier returns tool error.
+func TestGetLastComment_ValidationError(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{}
+
+	args := GetLastCommentArgs{Identifier: "INVALID_ID"}
+	result, err := getLastComment(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected IsError=true for invalid identifier")
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "invalid identifier") {
+		t.Errorf("expected validation error message, got %q", text)
+	}
+}
+
+// TestGetLastComment_ClientError — client.GetLastComment error is surfaced as tool error.
+func TestGetLastComment_ClientError(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, proj string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{
+				ID: "wi-uuid",
+				Project: plane.Expandable[plane.Project]{
+					ID: "proj-uuid",
+				},
+			}, nil
+		},
+		getLastCommentFn: func(ctx context.Context, projectID, workItemID string) (*plane.Comment, error) {
+			return nil, errors.New("plane API failed")
+		},
+	}
+
+	args := GetLastCommentArgs{Identifier: "PROJ-123"}
+	result, err := getLastComment(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected IsError=true for API client error")
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "plane API failed") {
+		t.Errorf("expected API error message, got %q", text)
 	}
 }

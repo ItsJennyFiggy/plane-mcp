@@ -460,3 +460,31 @@ func (c *Client) ListComments(ctx context.Context, projectID, workItemID string)
 	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/work-items/%s/comments/", c.WorkspaceSlug, projectID, workItemID)
 	return listAllGeneric[Comment](ctx, c, path, nil)
 }
+
+// GetLastComment retrieves the single most recently created comment on a work item.
+// Path: GET /api/v1/workspaces/{slug}/projects/{projectID}/work-items/{workItemID}/comments/
+// Returns nil if no comments exist.
+func (c *Client) GetLastComment(ctx context.Context, projectID, workItemID string) (*Comment, error) {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/work-items/%s/comments/", c.WorkspaceSlug, projectID, workItemID)
+	params := map[string]string{
+		"per_page": "1",
+		"order_by": "-created_at",
+	}
+
+	var raw json.RawMessage
+	err := c.request(ctx, "GET", path, params, nil, &raw)
+	if err != nil {
+		return nil, err
+	}
+
+	results, _, _, err := parseListResponse[Comment](raw)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(results) == 0 {
+		return nil, nil
+	}
+
+	return &results[0], nil
+}

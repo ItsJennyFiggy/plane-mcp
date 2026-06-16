@@ -1094,3 +1094,116 @@ func TestClientListComments(t *testing.T) {
 		}
 	})
 }
+
+func TestClientGetLastComment(t *testing.T) {
+	cfg := &config.Config{
+		PlaneAPIKey:        "test-key",
+		PlaneBaseURL:       "https://plane.example.com",
+		PlaneWorkspaceSlug: "test-workspace",
+	}
+
+	t.Run("Happy path returns latest comment", func(t *testing.T) {
+		// Arrange
+		client := NewClient(cfg)
+		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+			expectedPath := "/api/v1/workspaces/test-workspace/projects/proj-1/work-items/wi-42/comments/"
+			if req.URL.Path != expectedPath {
+				t.Errorf("expected path '%s', got '%s'", expectedPath, req.URL.Path)
+			}
+			if req.Method != "GET" {
+				t.Errorf("expected GET, got %s", req.Method)
+			}
+			if req.URL.Query().Get("per_page") != "1" {
+				t.Errorf("expected per_page=1, got '%s'", req.URL.Query().Get("per_page"))
+			}
+			if req.URL.Query().Get("order_by") != "-created_at" {
+				t.Errorf("expected order_by=-created_at, got '%s'", req.URL.Query().Get("order_by"))
+			}
+
+			body := `{
+				"results": [
+					{
+						"id": "comment-1",
+						"created_at": "2026-06-15T18:00:00Z",
+						"comment_html": "<p>This is the latest comment</p>",
+						"actor_detail": {
+							"id": "user-1",
+							"display_name": "Jane Doe",
+							"first_name": "Jane",
+							"last_name": "Doe"
+						}
+					}
+				],
+				"next_cursor": "",
+				"next_page_results": false
+			}`
+
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		})
+
+		// Act
+		comment, err := client.GetLastComment(context.Background(), "proj-1", "wi-42")
+
+		// Assert
+		if err != nil {
+			t.Fatalf("GetLastComment failed: %v", err)
+		}
+		if comment == nil {
+			t.Fatal("expected comment, got nil")
+		}
+		if comment.ID != "comment-1" || comment.CommentHTML != "<p>This is the latest comment</p>" || comment.CreatedAt != "2026-06-15T18:00:00Z" {
+			t.Errorf("unexpected comment content: %+v", comment)
+		}
+		if comment.ActorDetail.ID != "user-1" || comment.ActorDetail.DisplayName != "Jane Doe" || comment.ActorDetail.FirstName != "Jane" || comment.ActorDetail.LastName != "Doe" {
+			t.Errorf("unexpected actor detail: %+v", comment.ActorDetail)
+		}
+	})
+
+	t.Run("Empty path returns nil, nil", func(t *testing.T) {
+		// Arrange
+		client := NewClient(cfg)
+		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+			body := `{"results": []}`
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		})
+
+		// Act
+		comment, err := client.GetLastComment(context.Background(), "proj-1", "wi-42")
+
+		// Assert
+		if err != nil {
+			t.Fatalf("GetLastComment failed: %v", err)
+		}
+		if comment != nil {
+			t.Errorf("expected nil comment, got %+v", comment)
+		}
+	})
+
+	t.Run("Error path propagates error", func(t *testing.T) {
+		// Arrange
+		client := NewClient(cfg)
+		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: 500,
+				Body:       io.NopCloser(strings.NewReader("server error")),
+			}, nil
+		})
+
+		// Act
+		_, err := client.GetLastComment(context.Background(), "proj-1", "wi-42")
+
+		// Assert
+		if err == nil {
+			t.Fatal("expected error on 500, got nil")
+		}
+		if !strings.Contains(err.Error(), "500") {
+			t.Errorf("expected error message to mention 500, got: %v", err)
+		}
+	})
+}
