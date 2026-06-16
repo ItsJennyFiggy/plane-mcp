@@ -41,6 +41,7 @@ type planeClient interface {
 	ListLabels(ctx context.Context, projectID string) ([]plane.Label, error)
 	ListStates(ctx context.Context, projectID string) ([]plane.State, error)
 	ListComments(ctx context.Context, projectID, workItemID string) ([]plane.Comment, error)
+	GetLastComment(ctx context.Context, projectID, workItemID string) (*plane.Comment, error)
 }
 
 // planeResolver abstracts all name-resolution calls made by the tool handlers.
@@ -449,6 +450,11 @@ type ListCommentsArgs struct {
 	Identifier string `json:"identifier"`
 }
 
+// GetLastCommentArgs are the arguments for the get_last_comment tool.
+type GetLastCommentArgs struct {
+	Identifier string `json:"identifier"`
+}
+
 // AssignWorkItemArgs are the arguments for the assign_work_item tool.
 type AssignWorkItemArgs struct {
 	Identifier string              `json:"identifier"`
@@ -486,6 +492,37 @@ type SearchWorkItemsArgs struct {
 	Query   string  `json:"query"`
 	Project *string `json:"project,omitempty"`
 	Limit   *int    `json:"limit,omitempty"`
+}
+
+// commentOut is the YAML-serializable representation of a single comment,
+// shared by list_comments and get_last_comment. Field order is fixed to
+// author, created_at, body — matching the expected output shape.
+type commentOut struct {
+	Author    string `yaml:"author"`
+	CreatedAt string `yaml:"created_at"`
+	Body      string `yaml:"body"`
+}
+
+// formatCommentAuthor returns the best available human-readable author label
+// for a comment, applying the priority: DisplayName → FirstName+LastName → "Unknown".
+func formatCommentAuthor(c plane.Comment) string {
+	author := c.ActorDetail.DisplayName
+	if author == "" {
+		author = strings.TrimSpace(c.ActorDetail.FirstName + " " + c.ActorDetail.LastName)
+	}
+	if author == "" {
+		author = "Unknown"
+	}
+	return author
+}
+
+// makeCommentOut converts a plane.Comment to the YAML-ready commentOut struct.
+func makeCommentOut(c plane.Comment) commentOut {
+	return commentOut{
+		Author:    formatCommentAuthor(c),
+		CreatedAt: c.CreatedAt,
+		Body:      plane.ConvertHTMLToMarkdown(c.CommentHTML),
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -589,12 +626,6 @@ func listComments(ctx context.Context, args ListCommentsArgs, client planeClient
 		return toolError(fmt.Sprintf("failed to list comments: %v", err)), nil
 	}
 
-	type commentOut struct {
-		Author    string `yaml:"author"`
-		CreatedAt string `yaml:"created_at"`
-		Body      string `yaml:"body"`
-	}
-
 	if len(comments) == 0 {
 		yamlBytes, _ := yaml.Marshal([]commentOut{})
 		return toolText(string(yamlBytes)), nil
@@ -613,19 +644,7 @@ func listComments(ctx context.Context, args ListCommentsArgs, client planeClient
 
 	out := make([]commentOut, len(comments))
 	for i, c := range comments {
-		author := c.ActorDetail.DisplayName
-		if author == "" {
-			author = strings.TrimSpace(c.ActorDetail.FirstName + " " + c.ActorDetail.LastName)
-		}
-		if author == "" {
-			author = "Unknown"
-		}
-
-		out[i] = commentOut{
-			Author:    author,
-			CreatedAt: c.CreatedAt,
-			Body:      plane.ConvertHTMLToMarkdown(c.CommentHTML),
-		}
+		out[i] = makeCommentOut(c)
 	}
 
 	yamlBytes, err := yaml.Marshal(out)
@@ -634,6 +653,37 @@ func listComments(ctx context.Context, args ListCommentsArgs, client planeClient
 	}
 
 	return toolText(string(yamlBytes)), nil
+}
+
+// getLastComment implements the get_last_comment tool logic.
+func getLastComment(ctx context.Context, args GetLastCommentArgs, client planeClient) (*mcp.CallToolResult, error) {
+	projIdentifier, seqID, err := parseIdentifier(args.Identifier)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+
+	item, err := client.GetWorkItemByIdentifier(ctx, projIdentifier, seqID)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
+	}
+
+	comment, err := client.GetLastComment(ctx, item.Project.ID, item.ID)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to fetch last comment for %s: %v", args.Identifier, err)), nil
+	}
+
+	if comment == nil {
+		return toolText("null"), nil
+	}
+
+	// Serialize a single commentOut so the YAML field order (author, created_at,
+	// body) matches list_comments.
+	d, err := yaml.Marshal(makeCommentOut(*comment))
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to marshal comment to yaml: %v", err)), nil
+	}
+
+	return toolText(string(d)), nil
 }
 
 // reportProgress implements the report_progress tool logic.
@@ -1453,6 +1503,16 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 			Description: "List all comments on a work item by its project-prefixed identifier (e.g. PROJ-123), sorted by creation time ascending. Returns YAML with author, created_at, and body (HTML converted to Markdown) for each comment.",
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args ListCommentsArgs) (*mcp.CallToolResult, any, error) {
 			result, err := listComments(ctx, args, client)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("get_last_comment", plannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "get_last_comment",
+			Description: "Retrieve the single most recently created comment on a work item by its project-prefixed identifier (e.g. PROJ-123). Returns YAML with author, created_at, and body (HTML converted to Markdown). If no comments exist, returns 'null'.",
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args GetLastCommentArgs) (*mcp.CallToolResult, any, error) {
+			result, err := getLastComment(ctx, args, client)
 			return result, nil, err
 		})
 	}
