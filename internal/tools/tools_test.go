@@ -491,6 +491,7 @@ type mockClient struct {
 	createWorkItemLinkFn      func(ctx context.Context, projectID, itemID, linkURL, title string) error
 	addWorkItemsToModuleFn    func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error
 	listLabelsFn              func(ctx context.Context, projectID string) ([]plane.Label, error)
+	listStatesFn              func(ctx context.Context, projectID string) ([]plane.State, error)
 }
 
 func (m *mockClient) ListProjects(ctx context.Context) ([]plane.Project, error) {
@@ -519,6 +520,9 @@ func (m *mockClient) AddWorkItemsToModule(ctx context.Context, projectID, module
 }
 func (m *mockClient) ListLabels(ctx context.Context, projectID string) ([]plane.Label, error) {
 	return m.listLabelsFn(ctx, projectID)
+}
+func (m *mockClient) ListStates(ctx context.Context, projectID string) ([]plane.State, error) {
+	return m.listStatesFn(ctx, projectID)
 }
 
 // mockResolver is a test double for planeResolver.
@@ -3740,4 +3744,191 @@ func TestRegisterWithDeps_AssignWorkItem(t *testing.T) {
 	server2 := mcp.NewServer(&mcp.Implementation{Name: "test2", Version: "0"}, nil)
 	cfg2 := &config.Config{PlaneMCPProfile: "planner"}
 	registerWithDeps(server2, client, resolver, formatter, cfg2)
+}
+
+// ---------------------------------------------------------------------------
+// list_states handler tests (AGENT-39)
+// ---------------------------------------------------------------------------
+
+// TestListStates_Success — happy path: states found and formatted.
+func TestListStates_Success(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	states := []plane.State{
+		{ID: "st-1", Name: "Backlog", Group: "backlog", Color: "#cccccc", Sequence: 1},
+		{ID: "st-2", Name: "In Progress", Group: "started", Color: "#0000ff", Sequence: 2},
+	}
+	client := &mockClient{
+		listStatesFn: func(ctx context.Context, projectID string) ([]plane.State, error) {
+			return states, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "My Project"}, nil
+		},
+	}
+	args := ListStatesArgs{Project: "My Project"}
+
+	// Act
+	result, err := listStates(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got error: %+v", result.Content)
+	}
+	if len(result.Content) != 1 {
+		t.Fatalf("expected 1 content item, got %d", len(result.Content))
+	}
+	tc, ok := result.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected *mcp.TextContent, got %T", result.Content[0])
+	}
+	if !strings.Contains(tc.Text, `name: "Backlog"`) || !strings.Contains(tc.Text, `group: "backlog"`) || !strings.Contains(tc.Text, `id: "st-1"`) {
+		t.Errorf("expected first state details in output, got: %q", tc.Text)
+	}
+	if !strings.Contains(tc.Text, `name: "In Progress"`) || !strings.Contains(tc.Text, `group: "started"`) || !strings.Contains(tc.Text, `id: "st-2"`) {
+		t.Errorf("expected second state details in output, got: %q", tc.Text)
+	}
+}
+
+// TestListStates_YAMLRoundTrip — output must be parseable as valid YAML.
+func TestListStates_YAMLRoundTrip(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	states := []plane.State{
+		{ID: "st-1", Name: "Backlog", Group: "backlog", Color: "#cccccc", Sequence: 1},
+		{ID: "st-2", Name: "In Progress", Group: "started", Color: "#0000ff", Sequence: 2},
+		{ID: "st-3", Name: "Done", Group: "completed", Color: "#00ff00", Sequence: 3},
+	}
+	client := &mockClient{
+		listStatesFn: func(ctx context.Context, projectID string) ([]plane.State, error) {
+			return states, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid"}, nil
+		},
+	}
+	args := ListStatesArgs{Project: "Test"}
+
+	// Act
+	result, err := listStates(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected IsError=false: %+v", result.Content)
+	}
+
+	tc := result.Content[0].(*mcp.TextContent)
+
+	// Parse as YAML — must succeed.
+	var parsed []map[string]any
+	if err := yaml.Unmarshal([]byte(tc.Text), &parsed); err != nil {
+		t.Fatalf("output is not valid YAML: %v\noutput:\n%s", err, tc.Text)
+	}
+
+	if len(parsed) != 3 {
+		t.Fatalf("expected 3 states, got %d", len(parsed))
+	}
+	if parsed[0]["name"] != "Backlog" || parsed[0]["group"] != "backlog" || parsed[0]["id"] != "st-1" {
+		t.Errorf("first state: got id=%q name=%q group=%q", parsed[0]["id"], parsed[0]["name"], parsed[0]["group"])
+	}
+	if parsed[1]["name"] != "In Progress" || parsed[1]["group"] != "started" || parsed[1]["id"] != "st-2" {
+		t.Errorf("second state: got id=%q name=%q group=%q", parsed[1]["id"], parsed[1]["name"], parsed[1]["group"])
+	}
+	if parsed[2]["name"] != "Done" || parsed[2]["group"] != "completed" {
+		t.Errorf("third state: got name=%q group=%q", parsed[2]["name"], parsed[2]["group"])
+	}
+}
+
+// TestListStates_Empty — no states in project returns a clear message.
+func TestListStates_Empty(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	client := &mockClient{
+		listStatesFn: func(ctx context.Context, projectID string) ([]plane.State, error) {
+			return nil, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid"}, nil
+		},
+	}
+	args := ListStatesArgs{Project: "Empty Project"}
+
+	// Act
+	result, err := listStates(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Error("expected IsError=false for empty result")
+	}
+	tc := result.Content[0].(*mcp.TextContent)
+	if tc.Text != "No states found in this project." {
+		t.Errorf("expected 'No states found' message, got: %q", tc.Text)
+	}
+}
+
+// TestListStates_ProjectResolutionError — project not found returns error.
+func TestListStates_ProjectResolutionError(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	client := &mockClient{}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return nil, errors.New("project not found")
+		},
+	}
+	args := ListStatesArgs{Project: "Unknown"}
+
+	// Act
+	result, err := listStates(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when project resolution fails")
+	}
+}
+
+// TestListStates_ClientError — client.ListStates error is surfaced.
+func TestListStates_ClientError(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	client := &mockClient{
+		listStatesFn: func(ctx context.Context, projectID string) ([]plane.State, error) {
+			return nil, errors.New("api error")
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid"}, nil
+		},
+	}
+	args := ListStatesArgs{Project: "My Project"}
+
+	// Act
+	result, err := listStates(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when client.ListStates fails")
+	}
 }

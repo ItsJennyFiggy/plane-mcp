@@ -35,6 +35,7 @@ type planeClient interface {
 	CreateWorkItemLink(ctx context.Context, projectID, itemID, linkURL, title string) error
 	AddWorkItemsToModule(ctx context.Context, projectID, moduleID string, workItemIDs []string) error
 	ListLabels(ctx context.Context, projectID string) ([]plane.Label, error)
+	ListStates(ctx context.Context, projectID string) ([]plane.State, error)
 }
 
 // planeResolver abstracts all name-resolution calls made by the tool handlers.
@@ -421,6 +422,11 @@ type ListLabelsArgs struct {
 	Project string `json:"project"`
 }
 
+// ListStatesArgs are the arguments for the list_states tool.
+type ListStatesArgs struct {
+	Project string `json:"project"`
+}
+
 // AddLabelArgs are the arguments for the add_label tool.
 type AddLabelArgs struct {
 	Identifier string `json:"identifier"`
@@ -756,6 +762,30 @@ func listLabels(ctx context.Context, args ListLabelsArgs, client planeClient, re
 	return toolText(b.String()), nil
 }
 
+// listStates implements the list_states tool logic.
+func listStates(ctx context.Context, args ListStatesArgs, client planeClient, resolver planeResolver) (*mcp.CallToolResult, error) {
+	proj, err := resolver.ResolveProject(ctx, args.Project)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to resolve project %q: %v", args.Project, err)), nil
+	}
+
+	states, err := client.ListStates(ctx, proj.ID)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to list states: %v", err)), nil
+	}
+
+	if len(states) == 0 {
+		return toolText("No states found in this project."), nil
+	}
+
+	var b strings.Builder
+	for _, s := range states {
+		fmt.Fprintf(&b, "- id: %q\n  name: %q\n  group: %q\n  color: %q\n  sequence: %.0f\n", s.ID, s.Name, s.Group, s.Color, s.Sequence)
+	}
+
+	return toolText(b.String()), nil
+}
+
 // extractLabelIDs returns the ID strings from a slice of Expandable[Label],
 // handling both expanded (Val != nil) and non-expanded (ID only) entries.
 func extractLabelIDs(labels []plane.Expandable[plane.Label]) []string {
@@ -1043,6 +1073,16 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 			Description: "List all labels in a project, returning each label's id, name, and color.",
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args ListLabelsArgs) (*mcp.CallToolResult, any, error) {
 			result, err := listLabels(ctx, args, client, resolver)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("list_states", workerPlannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "list_states",
+			Description: "List all states in a project, returning each state's id, name, group, color, and sequence.",
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args ListStatesArgs) (*mcp.CallToolResult, any, error) {
+			result, err := listStates(ctx, args, client, resolver)
 			return result, nil, err
 		})
 	}
