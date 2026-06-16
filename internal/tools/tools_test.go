@@ -4632,8 +4632,8 @@ func TestSearchWorkItems_Success(t *testing.T) {
 	// Arrange
 	ctx := context.Background()
 	searchResults := []plane.SearchWorkItemResult{
-		{ID: "wi-1", Name: "Fix login", SequenceID: "1", ProjectIdentifier: "PROJ", ProjectID: "proj-1", WorkspaceSlug: "ws"},
-		{ID: "wi-2", Name: "Login error", SequenceID: "2", ProjectIdentifier: "PROJ", ProjectID: "proj-1", WorkspaceSlug: "ws"},
+		{ID: "wi-1", Name: "Fix login", SequenceID: 1, ProjectIdentifier: "PROJ", ProjectID: "proj-1", WorkspaceSlug: "ws"},
+		{ID: "wi-2", Name: "Login error", SequenceID: 2, ProjectIdentifier: "PROJ", ProjectID: "proj-1", WorkspaceSlug: "ws"},
 	}
 	workItems := []plane.WorkItem{
 		{ID: "wi-1", Name: "Fix login", SequenceID: 1},
@@ -4712,7 +4712,7 @@ func TestSearchWorkItems_ProjectFilter(t *testing.T) {
 	// Arrange
 	ctx := context.Background()
 	searchResults := []plane.SearchWorkItemResult{
-		{ID: "wi-1", Name: "Task", SequenceID: "1", ProjectIdentifier: "ALPHA", ProjectID: "proj-alpha", WorkspaceSlug: "ws"},
+		{ID: "wi-1", Name: "Task", SequenceID: 1, ProjectIdentifier: "ALPHA", ProjectID: "proj-alpha", WorkspaceSlug: "ws"},
 	}
 	var capturedParams map[string]string
 	client := &mockClient{
@@ -4816,9 +4816,9 @@ func TestSearchWorkItems_GracefulDegradation(t *testing.T) {
 	// Arrange
 	ctx := context.Background()
 	searchResults := []plane.SearchWorkItemResult{
-		{ID: "wi-1", Name: "Good One", SequenceID: "1", ProjectIdentifier: "PROJ", ProjectID: "proj-1", WorkspaceSlug: "ws"},
-		{ID: "wi-2", Name: "Bad One", SequenceID: "2", ProjectIdentifier: "PROJ", ProjectID: "proj-1", WorkspaceSlug: "ws"},
-		{ID: "wi-3", Name: "Good Two", SequenceID: "3", ProjectIdentifier: "PROJ", ProjectID: "proj-1", WorkspaceSlug: "ws"},
+		{ID: "wi-1", Name: "Good One", SequenceID: 1, ProjectIdentifier: "PROJ", ProjectID: "proj-1", WorkspaceSlug: "ws"},
+		{ID: "wi-2", Name: "Bad One", SequenceID: 2, ProjectIdentifier: "PROJ", ProjectID: "proj-1", WorkspaceSlug: "ws"},
+		{ID: "wi-3", Name: "Good Two", SequenceID: 3, ProjectIdentifier: "PROJ", ProjectID: "proj-1", WorkspaceSlug: "ws"},
 	}
 	client := &mockClient{
 		searchWorkItemsFn: func(ctx context.Context, params map[string]string) ([]plane.SearchWorkItemResult, error) {
@@ -4856,51 +4856,6 @@ func TestSearchWorkItems_GracefulDegradation(t *testing.T) {
 	}
 	if capturedItems[0].SequenceID != 1 || capturedItems[1].SequenceID != 3 {
 		t.Errorf("expected sequence IDs 1 and 3, got %d and %d", capturedItems[0].SequenceID, capturedItems[1].SequenceID)
-	}
-}
-
-// TestSearchWorkItems_GracefulDegradation_ParseError verifies that a
-// search result with a malformed sequence_id is skipped gracefully.
-func TestSearchWorkItems_GracefulDegradation_ParseError(t *testing.T) {
-	// Arrange
-	ctx := context.Background()
-	searchResults := []plane.SearchWorkItemResult{
-		{ID: "wi-bad", Name: "Bad Seq", SequenceID: "not-a-number", ProjectIdentifier: "PROJ", ProjectID: "proj-1", WorkspaceSlug: "ws"},
-		{ID: "wi-good", Name: "Good", SequenceID: "5", ProjectIdentifier: "PROJ", ProjectID: "proj-1", WorkspaceSlug: "ws"},
-	}
-	client := &mockClient{
-		searchWorkItemsFn: func(ctx context.Context, params map[string]string) ([]plane.SearchWorkItemResult, error) {
-			return searchResults, nil
-		},
-		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
-			return &plane.WorkItem{ID: "wi-5", Name: "Good", SequenceID: 5}, nil
-		},
-	}
-	resolver := &mockResolver{}
-	var capturedItems []plane.WorkItem
-	formatter := &mockFormatter{
-		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
-			capturedItems = items
-			return "- name: Good\n", nil
-		},
-	}
-	args := SearchWorkItemsArgs{Query: "test"}
-
-	// Act
-	result, err := searchWorkItems(ctx, args, client, resolver, formatter)
-
-	// Assert
-	if err != nil {
-		t.Fatalf("unexpected Go error: %v", err)
-	}
-	if result.IsError {
-		t.Errorf("expected IsError=false: %+v", result.Content)
-	}
-	if len(capturedItems) != 1 {
-		t.Fatalf("expected 1 item (bad seq skipped), got %d", len(capturedItems))
-	}
-	if capturedItems[0].SequenceID != 5 {
-		t.Errorf("expected sequence ID 5, got %d", capturedItems[0].SequenceID)
 	}
 }
 
