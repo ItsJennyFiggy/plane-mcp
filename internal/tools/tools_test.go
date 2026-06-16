@@ -5360,6 +5360,7 @@ func TestToolAnnotations(t *testing.T) {
 	readOnlyTools := []string{
 		"find_my_work", "get_work_item", "list_labels", "list_projects",
 		"search_work_items", "list_states", "list_comments", "get_last_comment",
+		"list_work_items",
 	}
 	for _, name := range readOnlyTools {
 		tool, ok := toolsByName[name]
@@ -5377,7 +5378,7 @@ func TestToolAnnotations(t *testing.T) {
 	}
 
 	// Idempotent read-write tools: readOnlyHint=false, idempotentHint=true
-	idempotentTools := []string{"report_progress", "add_label", "remove_label"}
+	idempotentTools := []string{"report_progress", "add_label", "remove_label", "assign_work_item"}
 	for _, name := range idempotentTools {
 		tool, ok := toolsByName[name]
 		if !ok {
@@ -5415,6 +5416,14 @@ func TestToolAnnotations(t *testing.T) {
 			t.Errorf("tool %q: expected DestructiveHint to be set, got nil", name)
 		} else if *tool.Annotations.DestructiveHint {
 			t.Errorf("tool %q: expected DestructiveHint=false, got true", name)
+		}
+	}
+
+	// Blanket check: every tool in the ListTools response must have non-nil
+	// Annotations to prevent future additions from being left unannotated.
+	for _, tool := range res.Tools {
+		if tool.Annotations == nil {
+			t.Errorf("tool %q is missing Annotations; every tool must be annotated", tool.Name)
 		}
 	}
 }

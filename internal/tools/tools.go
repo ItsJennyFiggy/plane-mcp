@@ -1436,6 +1436,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "assign_work_item",
 			Description: "Set, add, or remove assignees on a work item by user name, display name, email, or ID. Mode 'set' replaces all assignees, 'add' appends, 'remove' removes. An empty assignees list with mode 'set' clears all assignees.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, IdempotentHint: true},
 			InputSchema: assignWorkItemInputSchema(),
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args AssignWorkItemArgs) (*mcp.CallToolResult, any, error) {
 			result, err := assignWorkItem(ctx, args, client, resolver)
@@ -1492,6 +1493,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "list_work_items",
 			Description: "List work items in a project with optional filters for state group, state, priority, type, module, assignees, labels, and limit. Assignees, labels, states, and modules may be specified by name or ID and are resolved automatically.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 			InputSchema: listWorkItemsInputSchema(),
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args ListWorkItemsArgs) (*mcp.CallToolResult, any, error) {
 			result, err := listWorkItems(ctx, args, client, resolver, formatter)
