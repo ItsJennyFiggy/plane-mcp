@@ -3,6 +3,7 @@ package plane
 import (
 	"context"
 	"fmt"
+	stdhtml "html"
 	"strings"
 	"sync"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/commonmark"
 	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/strikethrough"
 	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/table"
+
 	"golang.org/x/net/html"
 	"gopkg.in/yaml.v3"
 )
@@ -74,11 +76,37 @@ func getConverter() *converter.Converter {
 	return conv
 }
 
+// looksDoublyEncoded reports whether s appears to be an entity-encoded HTML
+// string that needs decoding. It returns true when s contains entity-encoded
+// tag brackets (&lt; or &gt;) but no raw angle brackets (< or >).
+func looksDoublyEncoded(s string) bool {
+	hasEntityBracket := strings.Contains(s, "&lt;") || strings.Contains(s, "&gt;")
+	hasRawBracket := strings.Contains(s, "<") || strings.Contains(s, ">")
+	return hasEntityBracket && !hasRawBracket
+}
+
 // ConvertHTMLToMarkdown converts HTML to markdown using the configured plugins
 // (table, strikethrough, tasklist), falling back to stripping HTML tags on error.
+//
+// When the input appears to be doubly-encoded — it contains entity-encoded tag
+// brackets (&lt;, &gt;) but no raw angle brackets (<, >) — we decode entities
+// first. This handles descriptions authored via Plane's rich-text UI or other
+// MCP clients that store entity-encoded HTML.
+//
+// When the input already contains raw HTML tags we leave it as-is: those
+// descriptions come from our own Markdown→HTML path (create_task), where
+// entities represent literal characters (&lt; for < in inline code, etc.),
+// not structural tags.
 func ConvertHTMLToMarkdown(htmlStr string) string {
 	if htmlStr == "" {
 		return ""
+	}
+	// Only decode entities when the input looks doubly-encoded: it has
+	// entity-encoded tag brackets (&lt;, &gt;) but no raw angle brackets.
+	// This avoids corrupting legitimately-encoded content from
+	// Markdown-authored descriptions (e.g. inline code with tags).
+	if looksDoublyEncoded(htmlStr) {
+		htmlStr = stdhtml.UnescapeString(htmlStr)
 	}
 	markdown, err := getConverter().ConvertString(htmlStr)
 	if err != nil {
