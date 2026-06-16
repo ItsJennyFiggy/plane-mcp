@@ -12,6 +12,8 @@ import (
 	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/commonmark"
 	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/strikethrough"
 	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/table"
+	stdhtml "html"
+
 	"golang.org/x/net/html"
 	"gopkg.in/yaml.v3"
 )
@@ -76,10 +78,17 @@ func getConverter() *converter.Converter {
 
 // ConvertHTMLToMarkdown converts HTML to markdown using the configured plugins
 // (table, strikethrough, tasklist), falling back to stripping HTML tags on error.
+// HTML entities (e.g. &lt; &gt; &amp;) are decoded before conversion so that
+// entity-encoded descriptions authored via Plane's rich-text UI or other MCP
+// clients are correctly transformed into clean Markdown.
 func ConvertHTMLToMarkdown(htmlStr string) string {
 	if htmlStr == "" {
 		return ""
 	}
+	// Decode HTML entities so that entity-encoded tags (e.g. &lt;p&gt; from
+	// descriptions pasted or stored via Plane's rich-text editor) become real
+	// tags that the markdown converter can recognize.
+	htmlStr = stdhtml.UnescapeString(htmlStr)
 	markdown, err := getConverter().ConvertString(htmlStr)
 	if err != nil {
 		return stripHTML(htmlStr)

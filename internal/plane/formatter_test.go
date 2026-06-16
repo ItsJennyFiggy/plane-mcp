@@ -71,6 +71,26 @@ func TestConvertHTMLToMarkdown(t *testing.T) {
 			input:    "<ul><li>Normal item</li></ul>",
 			expected: "- Normal item",
 		},
+		{
+			name:     "Entity-encoded HTML tags are decoded and converted",
+			input:    "&lt;p&gt;Hello &lt;strong&gt;World&lt;/strong&gt;&lt;/p&gt;",
+			expected: "Hello **World**",
+		},
+		{
+			name:     "Entity-encoded HTML list with links",
+			input:    "&lt;ul&gt;&lt;li&gt;&lt;a href=&quot;https://example.com&quot;&gt;Link&lt;/a&gt;&lt;/li&gt;&lt;/ul&gt;",
+			expected: "- [Link](https://example.com)",
+		},
+		{
+			name:     "Entity-encoded amp in text preserved after decode",
+			input:    "<p>AT&amp;T &amp; Verizon</p>",
+			expected: "AT&T & Verizon",
+		},
+		{
+			name:     "No raw HTML entities in output — round-trip from Markdown-authored HTML",
+			input:    "<p>Simple <strong>bold</strong> and <em>italic</em> text with a <a href=\"https://plane.so\">link</a>.</p>",
+			expected: "Simple **bold** and *italic* text with a [link](https://plane.so).",
+		},
 	}
 
 	for _, tt := range tests {
@@ -209,6 +229,71 @@ func TestFormatWorkItemYAML(t *testing.T) {
 		}
 		if m["type"] != "feature" {
 			t.Errorf("expected type 'feature', got %v", m["type"])
+		}
+	})
+
+	t.Run("Full Mode with entity-encoded description", func(t *testing.T) {
+		// Simulate a description authored via Plane UI where the stored
+		// description_html is entity-encoded (e.g. &lt;p&gt;…&lt;/p&gt;).
+		entityItem := *item // shallow copy
+		entityItem.DescriptionHTML = "&lt;p&gt;Hello &lt;strong&gt;World&lt;/strong&gt;&lt;/p&gt;"
+		entityItem.DescriptionStripped = ""
+
+		got, err := FormatWorkItemYAML(context.Background(), &entityItem, resolver, "full")
+		if err != nil {
+			t.Fatalf("FormatWorkItemYAML failed: %v", err)
+		}
+
+		var m map[string]interface{}
+		if err := yaml.Unmarshal([]byte(got), &m); err != nil {
+			t.Fatalf("failed to unmarshal yaml output: %v", err)
+		}
+
+		desc, ok := m["description"].(string)
+		if !ok {
+			t.Fatal("description missing or not a string")
+		}
+
+		// The description must be clean Markdown, not entity-encoded HTML.
+		if desc != "Hello **World**" {
+			t.Errorf("expected 'Hello **World**', got %q", desc)
+		}
+
+		// Ensure no raw HTML tags or escaped entities remain.
+		for _, bad := range []string{"&lt;", "&gt;", "&amp;", "<p>", "</p>", "<strong>"} {
+			if strings.Contains(desc, bad) {
+				t.Errorf("description contains unwanted token %q: %s", bad, desc)
+			}
+		}
+	})
+
+	t.Run("Full Mode round-trip from Markdown-authored HTML", func(t *testing.T) {
+		// Simulates create_task → get_work_item round-trip.
+		// convertDescriptionToHTML("Some **bold** and _italic_ text") produces:
+		//   <p>Some <strong>bold</strong> and <em>italic</em> text</p>
+		// get_work_item should return the original Markdown.
+		rtItem := *item // shallow copy
+		rtItem.DescriptionHTML = "<p>Some <strong>bold</strong> and <em>italic</em> text</p>"
+		rtItem.DescriptionStripped = ""
+
+		got, err := FormatWorkItemYAML(context.Background(), &rtItem, resolver, "full")
+		if err != nil {
+			t.Fatalf("FormatWorkItemYAML failed: %v", err)
+		}
+
+		var m map[string]interface{}
+		if err := yaml.Unmarshal([]byte(got), &m); err != nil {
+			t.Fatalf("failed to unmarshal yaml output: %v", err)
+		}
+
+		desc, ok := m["description"].(string)
+		if !ok {
+			t.Fatal("description missing or not a string")
+		}
+
+		// The round-trip should produce equivalent Markdown.
+		if desc != "Some **bold** and *italic* text" {
+			t.Errorf("expected 'Some **bold** and *italic* text', got %q", desc)
 		}
 	})
 
@@ -361,6 +446,48 @@ func TestFormatWorkItemsYAML(t *testing.T) {
 		labels, ok := list[1]["labels"].([]interface{})
 		if !ok || len(labels) != 1 || labels[0] != "core" {
 			t.Errorf("expected labels ['core'], got %v", list[1]["labels"])
+		}
+	})
+
+	t.Run("Full Mode List with entity-encoded description", func(t *testing.T) {
+		entityItems := []WorkItem{
+			{
+				ID:              "wi-3",
+				Name:            "Entity task",
+				DescriptionHTML: "&lt;p&gt;Entity &lt;strong&gt;encoded&lt;/strong&gt; HTML&lt;/p&gt;",
+				SequenceID:      3,
+				Project:         Expandable[Project]{ID: projUUID1},
+				State:           Expandable[State]{ID: stateUUID1},
+			},
+		}
+
+		got, err := FormatWorkItemsYAML(context.Background(), entityItems, resolver, "full")
+		if err != nil {
+			t.Fatalf("FormatWorkItemsYAML failed: %v", err)
+		}
+
+		var list []map[string]interface{}
+		if err := yaml.Unmarshal([]byte(got), &list); err != nil {
+			t.Fatalf("failed to unmarshal list: %v", err)
+		}
+
+		if len(list) != 1 {
+			t.Fatalf("expected list of length 1, got %d", len(list))
+		}
+
+		desc, ok := list[0]["description"].(string)
+		if !ok {
+			t.Fatal("description missing or not a string")
+		}
+
+		if desc != "Entity **encoded** HTML" {
+			t.Errorf("expected 'Entity **encoded** HTML', got %q", desc)
+		}
+
+		for _, bad := range []string{"&lt;", "&gt;", "<p>", "</p>", "<strong>"} {
+			if strings.Contains(desc, bad) {
+				t.Errorf("description contains unwanted token %q: %s", bad, desc)
+			}
 		}
 	})
 }
