@@ -42,6 +42,10 @@ type planeClient interface {
 	ListStates(ctx context.Context, projectID string) ([]plane.State, error)
 	ListComments(ctx context.Context, projectID, workItemID string) ([]plane.Comment, error)
 	GetLastComment(ctx context.Context, projectID, workItemID string) (*plane.Comment, error)
+	GetWorkItem(ctx context.Context, projectID, workItemID string) (*plane.WorkItem, error)
+	ListWorkItemRelations(ctx context.Context, projectID, workItemID string) (*plane.WorkItemRelations, error)
+	CreateWorkItemRelation(ctx context.Context, projectID, workItemID, relationType string, issues []string) error
+	RemoveWorkItemRelation(ctx context.Context, projectID, workItemID, relatedIssue string) error
 }
 
 // planeResolver abstracts all name-resolution calls made by the tool handlers.
@@ -357,6 +361,24 @@ type SubmitForReviewArgs struct {
 	Identifier string `json:"identifier"`
 	PRURL      string `json:"pr_url"`
 	Comment    string `json:"comment"`
+}
+
+// SetRelationArgs are the arguments for the set_relation tool.
+type SetRelationArgs struct {
+	Identifier         string `json:"identifier"`
+	RelationType       string `json:"relation_type"`
+	RelatedIdentifier  string `json:"related_identifier"`
+}
+
+// RemoveRelationArgs are the arguments for the remove_relation tool.
+type RemoveRelationArgs struct {
+	Identifier        string `json:"identifier"`
+	RelatedIdentifier string `json:"related_identifier"`
+}
+
+// ListRelationsArgs are the arguments for the list_relations tool.
+type ListRelationsArgs struct {
+	Identifier string `json:"identifier"`
 }
 
 // FlexibleStringSlice is a []string that unmarshals from either a JSON array
@@ -773,6 +795,156 @@ func submitForReview(ctx context.Context, args SubmitForReviewArgs, client plane
 		"Work item %s has been moved to 'In Review' and PR link attached: %s",
 		args.Identifier, args.PRURL,
 	)), nil
+}
+
+// validRelationTypes defines the accepted relation type strings.
+var validRelationTypes = map[string]bool{
+	"blocking":      true,
+	"blocked_by":    true,
+	"duplicate":     true,
+	"relates_to":    true,
+	"start_after":   true,
+	"start_before":  true,
+	"finish_after":  true,
+	"finish_before": true,
+}
+
+// setRelation implements the set_relation tool logic.
+func setRelation(ctx context.Context, args SetRelationArgs, client planeClient) (*mcp.CallToolResult, error) {
+	if !validRelationTypes[args.RelationType] {
+		return toolError(fmt.Sprintf("invalid relation_type %q: must be one of blocking, blocked_by, duplicate, relates_to, start_after, start_before, finish_after, finish_before", args.RelationType)), nil
+	}
+
+	// Resolve source work item
+	srcProj, srcSeq, err := parseIdentifier(args.Identifier)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	srcItem, err := client.GetWorkItemByIdentifier(ctx, srcProj, srcSeq)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
+	}
+
+	// Resolve related work item
+	relProj, relSeq, err := parseIdentifier(args.RelatedIdentifier)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	relItem, err := client.GetWorkItemByIdentifier(ctx, relProj, relSeq)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.RelatedIdentifier, err)), nil
+	}
+
+	err = client.CreateWorkItemRelation(ctx, srcItem.Project.ID, srcItem.ID, args.RelationType, []string{relItem.ID})
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to create relation: %v", err)), nil
+	}
+
+	return toolText(fmt.Sprintf("Relation %s set: %s -> %s", args.RelationType, args.Identifier, args.RelatedIdentifier)), nil
+}
+
+// removeRelation implements the remove_relation tool logic.
+func removeRelation(ctx context.Context, args RemoveRelationArgs, client planeClient) (*mcp.CallToolResult, error) {
+	// Resolve source work item
+	srcProj, srcSeq, err := parseIdentifier(args.Identifier)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	srcItem, err := client.GetWorkItemByIdentifier(ctx, srcProj, srcSeq)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
+	}
+
+	// Resolve related work item
+	relProj, relSeq, err := parseIdentifier(args.RelatedIdentifier)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	relItem, err := client.GetWorkItemByIdentifier(ctx, relProj, relSeq)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.RelatedIdentifier, err)), nil
+	}
+
+	err = client.RemoveWorkItemRelation(ctx, srcItem.Project.ID, srcItem.ID, relItem.ID)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to remove relation: %v", err)), nil
+	}
+
+	return toolText(fmt.Sprintf("Relation removed between %s and %s", args.Identifier, args.RelatedIdentifier)), nil
+}
+
+// listRelations implements the list_relations tool logic.
+func listRelations(ctx context.Context, args ListRelationsArgs, client planeClient) (*mcp.CallToolResult, error) {
+	// Resolve the work item
+	srcProj, srcSeq, err := parseIdentifier(args.Identifier)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	srcItem, err := client.GetWorkItemByIdentifier(ctx, srcProj, srcSeq)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
+	}
+
+	relations, err := client.ListWorkItemRelations(ctx, srcItem.Project.ID, srcItem.ID)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to list relations: %v", err)), nil
+	}
+
+	// Build a project ID -> identifier map from all projects
+	projects, err := client.ListProjects(ctx)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to list projects: %v", err)), nil
+	}
+	projectIDToIdentifier := make(map[string]string)
+	for _, p := range projects {
+		projectIDToIdentifier[p.ID] = p.Identifier
+	}
+
+	// Relation types in display order
+	type relGroup struct {
+		Label string
+		Items []plane.RelationItem
+	}
+	groups := []relGroup{
+		{"blocking", relations.Blocking},
+		{"blocked_by", relations.BlockedBy},
+		{"duplicate", relations.Duplicate},
+		{"relates_to", relations.RelatesTo},
+		{"start_after", relations.StartAfter},
+		{"start_before", relations.StartBefore},
+		{"finish_after", relations.FinishAfter},
+		{"finish_before", relations.FinishBefore},
+	}
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("relations for %s:\n", args.Identifier))
+
+	for _, g := range groups {
+		if len(g.Items) == 0 {
+			continue
+		}
+		fmt.Fprintf(&b, "%s:\n", g.Label)
+		for _, ri := range g.Items {
+			// Fetch the related work item to get its name and sequence_id
+			projID := ri.ProjectID
+			if projID == "" {
+				projID = srcItem.Project.ID
+			}
+			relatedItem, err := client.GetWorkItem(ctx, projID, ri.IssueID)
+			if err != nil {
+				// Fallback: just show the UUID
+				fmt.Fprintf(&b, "  - identifier: %s\n    name: (unknown)\n", ri.IssueID)
+				continue
+			}
+			identifier := projectIDToIdentifier[projID]
+			if identifier == "" {
+				identifier = projID
+			}
+			fmt.Fprintf(&b, "  - identifier: %s-%d\n    name: %s\n", identifier, relatedItem.SequenceID, relatedItem.Name)
+		}
+	}
+
+	return toolText(strings.TrimSpace(b.String())), nil
 }
 
 // createTask implements the create_task tool logic.
@@ -1600,6 +1772,39 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args GetLastCommentArgs) (*mcp.CallToolResult, any, error) {
 			result, err := getLastComment(ctx, args, client)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("set_relation", plannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "set_relation",
+			Description: "Create a relation between two work items by their project-prefixed identifiers (e.g. PROJ-123). Valid relation types: blocking, blocked_by, duplicate, relates_to, start_after, start_before, finish_after, finish_before.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, IdempotentHint: true},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args SetRelationArgs) (*mcp.CallToolResult, any, error) {
+			result, err := setRelation(ctx, args, client)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("remove_relation", plannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "remove_relation",
+			Description: "Remove a relation between two work items by their project-prefixed identifiers (e.g. PROJ-123).",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, IdempotentHint: true},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args RemoveRelationArgs) (*mcp.CallToolResult, any, error) {
+			result, err := removeRelation(ctx, args, client)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("list_relations", plannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "list_relations",
+			Description: "List all relations for a work item by its project-prefixed identifier (e.g. PROJ-123). Returns YAML grouped by relation type with resolved identifiers and names.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args ListRelationsArgs) (*mcp.CallToolResult, any, error) {
+			result, err := listRelations(ctx, args, client)
 			return result, nil, err
 		})
 	}

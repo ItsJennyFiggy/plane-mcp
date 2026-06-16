@@ -496,6 +496,10 @@ type mockClient struct {
 	listStatesFn              func(ctx context.Context, projectID string) ([]plane.State, error)
 	listCommentsFn            func(ctx context.Context, projectID, workItemID string) ([]plane.Comment, error)
 	getLastCommentFn          func(ctx context.Context, projectID, workItemID string) (*plane.Comment, error)
+	getWorkItemFn             func(ctx context.Context, projectID, workItemID string) (*plane.WorkItem, error)
+	listWorkItemRelationsFn   func(ctx context.Context, projectID, workItemID string) (*plane.WorkItemRelations, error)
+	createWorkItemRelationFn  func(ctx context.Context, projectID, workItemID, relationType string, issues []string) error
+	removeWorkItemRelationFn  func(ctx context.Context, projectID, workItemID, relatedIssue string) error
 }
 
 func (m *mockClient) ListProjects(ctx context.Context) ([]plane.Project, error) {
@@ -541,6 +545,19 @@ func (m *mockClient) GetLastComment(ctx context.Context, projectID, workItemID s
 		return nil, nil
 	}
 	return m.getLastCommentFn(ctx, projectID, workItemID)
+}
+
+func (m *mockClient) GetWorkItem(ctx context.Context, projectID, workItemID string) (*plane.WorkItem, error) {
+	return m.getWorkItemFn(ctx, projectID, workItemID)
+}
+func (m *mockClient) ListWorkItemRelations(ctx context.Context, projectID, workItemID string) (*plane.WorkItemRelations, error) {
+	return m.listWorkItemRelationsFn(ctx, projectID, workItemID)
+}
+func (m *mockClient) CreateWorkItemRelation(ctx context.Context, projectID, workItemID, relationType string, issues []string) error {
+	return m.createWorkItemRelationFn(ctx, projectID, workItemID, relationType, issues)
+}
+func (m *mockClient) RemoveWorkItemRelation(ctx context.Context, projectID, workItemID, relatedIssue string) error {
+	return m.removeWorkItemRelationFn(ctx, projectID, workItemID, relatedIssue)
 }
 
 // mockResolver is a test double for planeResolver.
@@ -5951,4 +5968,419 @@ func TestUpdateWorkItem_DetailIsFull(t *testing.T) {
 	if capturedDetail != "full" {
 		t.Errorf("expected detail='full', got %q", capturedDetail)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Relation management tools tests
+// ---------------------------------------------------------------------------
+
+func TestSetRelation_InvalidRelationType(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{}
+	args := SetRelationArgs{
+		Identifier:        "PROJ-1",
+		RelationType:      "bogus",
+		RelatedIdentifier: "PROJ-2",
+	}
+
+	result, err := setRelation(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for invalid relation type")
+	}
+}
+
+func TestSetRelation_HappyPath(t *testing.T) {
+	ctx := context.Background()
+	var capturedRelationType string
+	var capturedIssues []string
+	var capturedWorkItemID string
+
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			if pi == "PROJ" && seq == 1 {
+				return &plane.WorkItem{ID: "wi-1", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+			}
+			return &plane.WorkItem{ID: "wi-2", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+		},
+		createWorkItemRelationFn: func(ctx context.Context, projectID, workItemID, relationType string, issues []string) error {
+			capturedWorkItemID = workItemID
+			capturedRelationType = relationType
+			capturedIssues = issues
+			return nil
+		},
+	}
+	args := SetRelationArgs{
+		Identifier:        "PROJ-1",
+		RelationType:      "blocking",
+		RelatedIdentifier: "PROJ-2",
+	}
+
+	result, err := setRelation(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if capturedRelationType != "blocking" {
+		t.Errorf("expected relation_type='blocking', got %q", capturedRelationType)
+	}
+	if capturedWorkItemID != "wi-1" {
+		t.Errorf("expected workItemID='wi-1', got %q", capturedWorkItemID)
+	}
+	if len(capturedIssues) != 1 || capturedIssues[0] != "wi-2" {
+		t.Errorf("expected issues=[wi-2], got %v", capturedIssues)
+	}
+}
+
+func TestSetRelation_SourceNotFound(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return nil, errors.New("not found")
+		},
+	}
+	args := SetRelationArgs{
+		Identifier:        "PROJ-99",
+		RelationType:      "relates_to",
+		RelatedIdentifier: "PROJ-2",
+	}
+
+	result, err := setRelation(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when source item not found")
+	}
+}
+
+func TestSetRelation_RelatedNotFound(t *testing.T) {
+	ctx := context.Background()
+	callCount := 0
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			callCount++
+			if callCount == 1 {
+				return &plane.WorkItem{ID: "wi-1", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+			}
+			return nil, errors.New("not found")
+		},
+	}
+	args := SetRelationArgs{
+		Identifier:        "PROJ-1",
+		RelationType:      "relates_to",
+		RelatedIdentifier: "PROJ-99",
+	}
+
+	result, err := setRelation(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when related item not found")
+	}
+}
+
+func TestSetRelation_APIFailure(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{ID: "wi-1", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+		},
+		createWorkItemRelationFn: func(ctx context.Context, projectID, workItemID, relationType string, issues []string) error {
+			return errors.New("api error")
+		},
+	}
+	args := SetRelationArgs{
+		Identifier:        "PROJ-1",
+		RelationType:      "duplicate",
+		RelatedIdentifier: "PROJ-2",
+	}
+
+	result, err := setRelation(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when API fails")
+	}
+}
+
+func TestRemoveRelation_HappyPath(t *testing.T) {
+	ctx := context.Background()
+	var capturedRelatedIssue string
+	var capturedWorkItemID string
+
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			if pi == "PROJ" && seq == 1 {
+				return &plane.WorkItem{ID: "wi-1", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+			}
+			return &plane.WorkItem{ID: "wi-2", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+		},
+		removeWorkItemRelationFn: func(ctx context.Context, projectID, workItemID, relatedIssue string) error {
+			capturedWorkItemID = workItemID
+			capturedRelatedIssue = relatedIssue
+			return nil
+		},
+	}
+	args := RemoveRelationArgs{
+		Identifier:        "PROJ-1",
+		RelatedIdentifier: "PROJ-2",
+	}
+
+	result, err := removeRelation(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if capturedWorkItemID != "wi-1" {
+		t.Errorf("expected workItemID='wi-1', got %q", capturedWorkItemID)
+	}
+	if capturedRelatedIssue != "wi-2" {
+		t.Errorf("expected relatedIssue='wi-2', got %q", capturedRelatedIssue)
+	}
+}
+
+func TestRemoveRelation_SourceNotFound(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return nil, errors.New("not found")
+		},
+	}
+	args := RemoveRelationArgs{
+		Identifier:        "PROJ-99",
+		RelatedIdentifier: "PROJ-2",
+	}
+
+	result, err := removeRelation(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when source item not found")
+	}
+}
+
+func TestRemoveRelation_APIFailure(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{ID: "wi-1", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+		},
+		removeWorkItemRelationFn: func(ctx context.Context, projectID, workItemID, relatedIssue string) error {
+			return errors.New("api error")
+		},
+	}
+	args := RemoveRelationArgs{
+		Identifier:        "PROJ-1",
+		RelatedIdentifier: "PROJ-2",
+	}
+
+	result, err := removeRelation(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when API fails")
+	}
+}
+
+func TestListRelations_HappyPath(t *testing.T) {
+	ctx := context.Background()
+
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{ID: "wi-1", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}, SequenceID: 1}, nil
+		},
+		listProjectsFn: func(ctx context.Context) ([]plane.Project, error) {
+			return []plane.Project{{ID: "proj-uuid", Identifier: "PROJ"}}, nil
+		},
+		listWorkItemRelationsFn: func(ctx context.Context, projectID, workItemID string) (*plane.WorkItemRelations, error) {
+			return &plane.WorkItemRelations{
+				Blocking: []plane.RelationItem{
+					{ProjectID: "proj-uuid", IssueID: "wi-2"},
+				},
+				RelatesTo: []plane.RelationItem{
+					{ProjectID: "proj-uuid", IssueID: "wi-3"},
+				},
+			}, nil
+		},
+		getWorkItemFn: func(ctx context.Context, projectID, workItemID string) (*plane.WorkItem, error) {
+			if workItemID == "wi-2" {
+				return &plane.WorkItem{ID: "wi-2", Name: "Blocked task", SequenceID: 2}, nil
+			}
+			return &plane.WorkItem{ID: "wi-3", Name: "Related task", SequenceID: 3}, nil
+		},
+	}
+	args := ListRelationsArgs{Identifier: "PROJ-1"}
+
+	result, err := listRelations(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "blocking:") {
+		t.Errorf("expected 'blocking:' in output, got: %s", text)
+	}
+	if !strings.Contains(text, "PROJ-2") {
+		t.Errorf("expected 'PROJ-2' in output, got: %s", text)
+	}
+	if !strings.Contains(text, "Blocked task") {
+		t.Errorf("expected 'Blocked task' in output, got: %s", text)
+	}
+	if !strings.Contains(text, "relates_to:") {
+		t.Errorf("expected 'relates_to:' in output, got: %s", text)
+	}
+	if !strings.Contains(text, "PROJ-3") {
+		t.Errorf("expected 'PROJ-3' in output, got: %s", text)
+	}
+}
+
+func TestListRelations_Empty(t *testing.T) {
+	ctx := context.Background()
+
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{ID: "wi-1", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}, SequenceID: 1}, nil
+		},
+		listProjectsFn: func(ctx context.Context) ([]plane.Project, error) {
+			return []plane.Project{{ID: "proj-uuid", Identifier: "PROJ"}}, nil
+		},
+		listWorkItemRelationsFn: func(ctx context.Context, projectID, workItemID string) (*plane.WorkItemRelations, error) {
+			return &plane.WorkItemRelations{}, nil
+		},
+	}
+	args := ListRelationsArgs{Identifier: "PROJ-1"}
+
+	result, err := listRelations(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "relations for PROJ-1") {
+		t.Errorf("expected header in output, got: %s", text)
+	}
+}
+
+func TestListRelations_SourceNotFound(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return nil, errors.New("not found")
+		},
+	}
+	args := ListRelationsArgs{Identifier: "PROJ-99"}
+
+	result, err := listRelations(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when source item not found")
+	}
+}
+
+func TestListRelations_RelationsAPIFailure(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{ID: "wi-1", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+		},
+		listWorkItemRelationsFn: func(ctx context.Context, projectID, workItemID string) (*plane.WorkItemRelations, error) {
+			return nil, errors.New("api error")
+		},
+	}
+	args := ListRelationsArgs{Identifier: "PROJ-1"}
+
+	result, err := listRelations(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when relations API fails")
+	}
+}
+
+func TestListRelations_ProjectsListFails(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{ID: "wi-1", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+		},
+		listWorkItemRelationsFn: func(ctx context.Context, projectID, workItemID string) (*plane.WorkItemRelations, error) {
+			return &plane.WorkItemRelations{}, nil
+		},
+		listProjectsFn: func(ctx context.Context) ([]plane.Project, error) {
+			return nil, errors.New("projects api error")
+		},
+	}
+	args := ListRelationsArgs{Identifier: "PROJ-1"}
+
+	result, err := listRelations(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when projects list fails")
+	}
+}
+
+func TestListRelations_RelatedItemNotFound(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{ID: "wi-1", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}, SequenceID: 1}, nil
+		},
+		listProjectsFn: func(ctx context.Context) ([]plane.Project, error) {
+			return []plane.Project{{ID: "proj-uuid", Identifier: "PROJ"}}, nil
+		},
+		listWorkItemRelationsFn: func(ctx context.Context, projectID, workItemID string) (*plane.WorkItemRelations, error) {
+			return &plane.WorkItemRelations{
+				Blocking: []plane.RelationItem{
+					{ProjectID: "proj-uuid", IssueID: "wi-missing"},
+				},
+			}, nil
+		},
+		getWorkItemFn: func(ctx context.Context, projectID, workItemID string) (*plane.WorkItem, error) {
+			return nil, errors.New("not found")
+		},
+	}
+	args := ListRelationsArgs{Identifier: "PROJ-1"}
+
+	result, err := listRelations(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false (graceful degradation): %+v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "(unknown)") {
+		t.Errorf("expected '(unknown)' fallback for missing item, got: %s", text)
+	}
+}
+
+func TestRegisterWithDeps_IncludesRelationTools(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
+	client := &mockClient{}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{}
+	cfg := &config.Config{PlaneMCPProfile: "full"}
+
+	// Should not panic — verifies set_relation, remove_relation, list_relations register cleanly.
+	registerWithDeps(server, client, resolver, formatter, cfg)
 }

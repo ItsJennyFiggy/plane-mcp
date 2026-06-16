@@ -1207,3 +1207,243 @@ func TestClientGetLastComment(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// Relation management client tests
+// ---------------------------------------------------------------------------
+
+func TestClientGetWorkItem(t *testing.T) {
+	cfg := &config.Config{
+		PlaneAPIKey:        "test-key",
+		PlaneBaseURL:       "https://plane.example.com",
+		PlaneWorkspaceSlug: "test-workspace",
+	}
+
+	t.Run("Happy path returns work item", func(t *testing.T) {
+		client := NewClient(cfg)
+		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+			expectedPath := "/api/v1/workspaces/test-workspace/projects/proj-1/work-items/wi-42/"
+			if req.URL.Path != expectedPath {
+				t.Errorf("expected path '%s', got '%s'", expectedPath, req.URL.Path)
+			}
+			if req.Method != "GET" {
+				t.Errorf("expected GET, got %s", req.Method)
+			}
+			body := `{"id": "wi-42", "name": "Test Item", "sequence_id": 42}`
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		})
+
+		item, err := client.GetWorkItem(context.Background(), "proj-1", "wi-42")
+		if err != nil {
+			t.Fatalf("GetWorkItem failed: %v", err)
+		}
+		if item.ID != "wi-42" || item.Name != "Test Item" || item.SequenceID != 42 {
+			t.Errorf("unexpected item: %+v", item)
+		}
+	})
+
+	t.Run("Error path propagates error", func(t *testing.T) {
+		client := NewClient(cfg)
+		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: 404,
+				Body:       io.NopCloser(strings.NewReader("not found")),
+			}, nil
+		})
+
+		_, err := client.GetWorkItem(context.Background(), "proj-1", "wi-missing")
+		if err == nil {
+			t.Fatal("expected error on 404, got nil")
+		}
+		if !strings.Contains(err.Error(), "404") {
+			t.Errorf("expected error message to mention 404, got: %v", err)
+		}
+	})
+}
+
+func TestClientListWorkItemRelations(t *testing.T) {
+	cfg := &config.Config{
+		PlaneAPIKey:        "test-key",
+		PlaneBaseURL:       "https://plane.example.com",
+		PlaneWorkspaceSlug: "test-workspace",
+	}
+
+	t.Run("Happy path returns relations", func(t *testing.T) {
+		client := NewClient(cfg)
+		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+			expectedPath := "/api/v1/workspaces/test-workspace/projects/proj-1/work-items/wi-1/relations/"
+			if req.URL.Path != expectedPath {
+				t.Errorf("expected path '%s', got '%s'", expectedPath, req.URL.Path)
+			}
+			if req.Method != "GET" {
+				t.Errorf("expected GET, got %s", req.Method)
+			}
+			body := `{
+				"blocking": [{"project_id": "proj-uuid", "issue_id": "wi-2"}],
+				"blocked_by": [],
+				"duplicate": [],
+				"relates_to": [{"project_id": "proj-uuid", "issue_id": "wi-3"}],
+				"start_after": [],
+				"start_before": [],
+				"finish_after": [],
+				"finish_before": []
+			}`
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		})
+
+		relations, err := client.ListWorkItemRelations(context.Background(), "proj-1", "wi-1")
+		if err != nil {
+			t.Fatalf("ListWorkItemRelations failed: %v", err)
+		}
+		if len(relations.Blocking) != 1 || relations.Blocking[0].IssueID != "wi-2" {
+			t.Errorf("unexpected blocking relations: %+v", relations.Blocking)
+		}
+		if len(relations.RelatesTo) != 1 || relations.RelatesTo[0].IssueID != "wi-3" {
+			t.Errorf("unexpected relates_to relations: %+v", relations.RelatesTo)
+		}
+	})
+
+	t.Run("Error path propagates error", func(t *testing.T) {
+		client := NewClient(cfg)
+		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: 404,
+				Body:       io.NopCloser(strings.NewReader("not found")),
+			}, nil
+		})
+
+		_, err := client.ListWorkItemRelations(context.Background(), "proj-1", "wi-missing")
+		if err == nil {
+			t.Fatal("expected error on 404, got nil")
+		}
+		if !strings.Contains(err.Error(), "404") {
+			t.Errorf("expected error message to mention 404, got: %v", err)
+		}
+	})
+}
+
+func TestClientCreateWorkItemRelation(t *testing.T) {
+	cfg := &config.Config{
+		PlaneAPIKey:        "test-key",
+		PlaneBaseURL:       "https://plane.example.com",
+		PlaneWorkspaceSlug: "test-workspace",
+	}
+
+	t.Run("Happy path posts relation", func(t *testing.T) {
+		client := NewClient(cfg)
+		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+			expectedPath := "/api/v1/workspaces/test-workspace/projects/proj-1/work-items/wi-1/relations/"
+			if req.URL.Path != expectedPath {
+				t.Errorf("expected path '%s', got '%s'", expectedPath, req.URL.Path)
+			}
+			if req.Method != "POST" {
+				t.Errorf("expected POST, got %s", req.Method)
+			}
+
+			var reqBody map[string]any
+			bodyBytes, _ := io.ReadAll(req.Body)
+			if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
+				t.Fatalf("failed to parse request body: %v", err)
+			}
+			if reqBody["relation_type"] != "blocking" {
+				t.Errorf("expected relation_type='blocking', got %v", reqBody["relation_type"])
+			}
+			issues, ok := reqBody["issues"].([]any)
+			if !ok || len(issues) != 1 || issues[0] != "wi-2" {
+				t.Errorf("expected issues=[wi-2], got %v", reqBody["issues"])
+			}
+
+			return &http.Response{
+				StatusCode: 201,
+				Body:       io.NopCloser(strings.NewReader(`{}`)),
+			}, nil
+		})
+
+		err := client.CreateWorkItemRelation(context.Background(), "proj-1", "wi-1", "blocking", []string{"wi-2"})
+		if err != nil {
+			t.Fatalf("CreateWorkItemRelation failed: %v", err)
+		}
+	})
+
+	t.Run("Error path propagates error", func(t *testing.T) {
+		client := NewClient(cfg)
+		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: 400,
+				Body:       io.NopCloser(strings.NewReader("bad request")),
+			}, nil
+		})
+
+		err := client.CreateWorkItemRelation(context.Background(), "proj-1", "wi-1", "blocking", []string{"wi-2"})
+		if err == nil {
+			t.Fatal("expected error on 400, got nil")
+		}
+		if !strings.Contains(err.Error(), "400") {
+			t.Errorf("expected error message to mention 400, got: %v", err)
+		}
+	})
+}
+
+func TestClientRemoveWorkItemRelation(t *testing.T) {
+	cfg := &config.Config{
+		PlaneAPIKey:        "test-key",
+		PlaneBaseURL:       "https://plane.example.com",
+		PlaneWorkspaceSlug: "test-workspace",
+	}
+
+	t.Run("Happy path posts removal", func(t *testing.T) {
+		client := NewClient(cfg)
+		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+			expectedPath := "/api/v1/workspaces/test-workspace/projects/proj-1/work-items/wi-1/relations/remove/"
+			if req.URL.Path != expectedPath {
+				t.Errorf("expected path '%s', got '%s'", expectedPath, req.URL.Path)
+			}
+			if req.Method != "POST" {
+				t.Errorf("expected POST, got %s", req.Method)
+			}
+
+			var reqBody map[string]any
+			bodyBytes, _ := io.ReadAll(req.Body)
+			if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
+				t.Fatalf("failed to parse request body: %v", err)
+			}
+			if reqBody["related_issue"] != "wi-2" {
+				t.Errorf("expected related_issue='wi-2', got %v", reqBody["related_issue"])
+			}
+
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader(`{}`)),
+			}, nil
+		})
+
+		err := client.RemoveWorkItemRelation(context.Background(), "proj-1", "wi-1", "wi-2")
+		if err != nil {
+			t.Fatalf("RemoveWorkItemRelation failed: %v", err)
+		}
+	})
+
+	t.Run("Error path propagates error", func(t *testing.T) {
+		client := NewClient(cfg)
+		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: 404,
+				Body:       io.NopCloser(strings.NewReader("not found")),
+			}, nil
+		})
+
+		err := client.RemoveWorkItemRelation(context.Background(), "proj-1", "wi-1", "wi-missing")
+		if err == nil {
+			t.Fatal("expected error on 404, got nil")
+		}
+		if !strings.Contains(err.Error(), "404") {
+			t.Errorf("expected error message to mention 404, got: %v", err)
+		}
+	})
+}

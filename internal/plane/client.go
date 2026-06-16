@@ -156,6 +156,24 @@ type CommentActorDetail struct {
 	LastName    string `json:"last_name"`
 }
 
+// RelationItem represents a single related work item reference.
+type RelationItem struct {
+	ProjectID string `json:"project_id"`
+	IssueID   string `json:"issue_id"`
+}
+
+// WorkItemRelations holds all relations for a work item, grouped by relation type.
+type WorkItemRelations struct {
+	Blocking     []RelationItem `json:"blocking"`
+	BlockedBy    []RelationItem `json:"blocked_by"`
+	Duplicate    []RelationItem `json:"duplicate"`
+	RelatesTo    []RelationItem `json:"relates_to"`
+	StartAfter   []RelationItem `json:"start_after"`
+	StartBefore  []RelationItem `json:"start_before"`
+	FinishAfter  []RelationItem `json:"finish_after"`
+	FinishBefore []RelationItem `json:"finish_before"`
+}
+
 // Comment represents a comment on a work item.
 type Comment struct {
 	ID          string             `json:"id"`
@@ -459,6 +477,51 @@ func (c *Client) AddWorkItemsToModule(ctx context.Context, projectID, moduleID s
 func (c *Client) ListComments(ctx context.Context, projectID, workItemID string) ([]Comment, error) {
 	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/work-items/%s/comments/", c.WorkspaceSlug, projectID, workItemID)
 	return listAllGeneric[Comment](ctx, c, path, nil)
+}
+
+// GetWorkItem retrieves a single work item by project ID and work item ID (UUID).
+// Path: GET /api/v1/workspaces/{slug}/projects/{projectID}/work-items/{workItemID}/
+func (c *Client) GetWorkItem(ctx context.Context, projectID, workItemID string) (*WorkItem, error) {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/work-items/%s/", c.WorkspaceSlug, projectID, workItemID)
+	var item WorkItem
+	err := c.request(ctx, "GET", path, nil, nil, &item)
+	if err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
+// ListWorkItemRelations retrieves all relations for a work item.
+// Path: GET /api/v1/workspaces/{slug}/projects/{projectID}/work-items/{workItemID}/relations/
+func (c *Client) ListWorkItemRelations(ctx context.Context, projectID, workItemID string) (*WorkItemRelations, error) {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/work-items/%s/relations/", c.WorkspaceSlug, projectID, workItemID)
+	var relations WorkItemRelations
+	err := c.request(ctx, "GET", path, nil, nil, &relations)
+	if err != nil {
+		return nil, err
+	}
+	return &relations, nil
+}
+
+// CreateWorkItemRelation creates a relation between a work item and one or more other work items.
+// Path: POST /api/v1/workspaces/{slug}/projects/{projectID}/work-items/{workItemID}/relations/
+func (c *Client) CreateWorkItemRelation(ctx context.Context, projectID, workItemID, relationType string, issues []string) error {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/work-items/%s/relations/", c.WorkspaceSlug, projectID, workItemID)
+	body := map[string]any{
+		"relation_type": relationType,
+		"issues":        issues,
+	}
+	return c.request(ctx, "POST", path, nil, body, nil)
+}
+
+// RemoveWorkItemRelation removes a relation between a work item and another work item.
+// Path: POST /api/v1/workspaces/{slug}/projects/{projectID}/work-items/{workItemID}/relations/remove/
+func (c *Client) RemoveWorkItemRelation(ctx context.Context, projectID, workItemID, relatedIssue string) error {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/work-items/%s/relations/remove/", c.WorkspaceSlug, projectID, workItemID)
+	body := map[string]any{
+		"related_issue": relatedIssue,
+	}
+	return c.request(ctx, "POST", path, nil, body, nil)
 }
 
 // GetLastComment retrieves the single most recently created comment on a work item.
