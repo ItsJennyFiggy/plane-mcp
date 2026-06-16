@@ -1364,10 +1364,13 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 	workerPlannerFull := []string{"worker", "planner", "full"}
 	plannerFull := []string{"planner", "full"}
 
+	falsePtr := false
+
 	if shouldRegister("find_my_work", workerPlannerFull, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "find_my_work",
 			Description: "List all work items assigned to the current user, optionally filtered by project and state group.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args FindMyWorkArgs) (*mcp.CallToolResult, any, error) {
 			result, err := findMyWork(ctx, args, client, resolver, formatter)
 			return result, nil, err
@@ -1378,6 +1381,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "list_projects",
 			Description: "List all projects, returning each project's identifier, name, and id.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args ListProjectsArgs) (*mcp.CallToolResult, any, error) {
 			result, err := listProjects(ctx, client)
 			return result, nil, err
@@ -1388,6 +1392,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "list_labels",
 			Description: "List all labels in a project, returning each label's id, name, and color.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args ListLabelsArgs) (*mcp.CallToolResult, any, error) {
 			result, err := listLabels(ctx, args, client, resolver)
 			return result, nil, err
@@ -1398,6 +1403,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "list_states",
 			Description: "List all states in a project, returning each state's id, name, and group.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args ListStatesArgs) (*mcp.CallToolResult, any, error) {
 			result, err := listStates(ctx, args, client, resolver)
 			return result, nil, err
@@ -1408,6 +1414,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "add_label",
 			Description: "Attach a label (by name or id) to a work item. Idempotent — returns success if the label is already attached.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, IdempotentHint: true},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args AddLabelArgs) (*mcp.CallToolResult, any, error) {
 			result, err := addLabel(ctx, args, client, resolver)
 			return result, nil, err
@@ -1418,6 +1425,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "remove_label",
 			Description: "Detach a label (by name or id) from a work item. Idempotent — returns success if the label is already absent.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, IdempotentHint: true},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args RemoveLabelArgs) (*mcp.CallToolResult, any, error) {
 			result, err := removeLabel(ctx, args, client, resolver)
 			return result, nil, err
@@ -1439,6 +1447,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "get_work_item",
 			Description: "Retrieve a single work item by its project-prefixed identifier (e.g. PROJ-123).",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args GetWorkItemArgs) (*mcp.CallToolResult, any, error) {
 			result, err := getWorkItem(ctx, args, client, formatter)
 			return result, nil, err
@@ -1449,6 +1458,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "report_progress",
 			Description: "Post a progress comment on a work item and optionally transition it to a new state.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, IdempotentHint: true},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args ReportProgressArgs) (*mcp.CallToolResult, any, error) {
 			result, err := reportProgress(ctx, args, client, resolver)
 			return result, nil, err
@@ -1459,6 +1469,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "submit_for_review",
 			Description: "Attach a PR link to a work item, post a comment, and move it to the 'In Review' state.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &falsePtr},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args SubmitForReviewArgs) (*mcp.CallToolResult, any, error) {
 			result, err := submitForReview(ctx, args, client, resolver)
 			return result, nil, err
@@ -1470,6 +1481,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 			Name:        "create_task",
 			Description: "Create a new work item in the specified project with optional description, priority, assignees, labels, and module. The description accepts Markdown (headings, lists, task lists, code blocks, blockquotes, emphasis) and is converted to Plane-native rich text. The module may be a module name or ID; if it cannot be resolved the task is not created.",
 			InputSchema: createTaskInputSchema(),
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &falsePtr},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args CreateTaskArgs) (*mcp.CallToolResult, any, error) {
 			result, err := createTask(ctx, args, client, resolver, formatter)
 			return result, nil, err
@@ -1491,6 +1503,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "search_work_items",
 			Description: "Search work items across the workspace by a text query, with optional project filter and limit.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args SearchWorkItemsArgs) (*mcp.CallToolResult, any, error) {
 			result, err := searchWorkItems(ctx, args, client, resolver, formatter)
 			return result, nil, err
@@ -1501,6 +1514,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "list_comments",
 			Description: "List all comments on a work item by its project-prefixed identifier (e.g. PROJ-123), sorted by creation time ascending. Returns YAML with author, created_at, and body (HTML converted to Markdown) for each comment.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args ListCommentsArgs) (*mcp.CallToolResult, any, error) {
 			result, err := listComments(ctx, args, client)
 			return result, nil, err
@@ -1511,6 +1525,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "get_last_comment",
 			Description: "Retrieve the single most recently created comment on a work item by its project-prefixed identifier (e.g. PROJ-123). Returns YAML with author, created_at, and body (HTML converted to Markdown). If no comments exist, returns 'null'.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args GetLastCommentArgs) (*mcp.CallToolResult, any, error) {
 			result, err := getLastComment(ctx, args, client)
 			return result, nil, err
