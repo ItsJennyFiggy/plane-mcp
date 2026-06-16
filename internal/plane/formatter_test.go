@@ -91,6 +91,16 @@ func TestConvertHTMLToMarkdown(t *testing.T) {
 			input:    "<p>Simple <strong>bold</strong> and <em>italic</em> text with a <a href=\"https://plane.so\">link</a>.</p>",
 			expected: "Simple **bold** and *italic* text with a [link](https://plane.so).",
 		},
+		{
+			name:     "Markdown-authored inline code with HTML tag is preserved",
+			input:    "<p>Use the <code>&lt;div&gt;</code> element.</p>",
+			expected: "Use the `<div>` element.",
+		},
+		{
+			name:     "Markdown-authored literal inequality is preserved",
+			input:    "<p>a &lt; b</p>",
+			expected: "a &lt; b",
+		},
 	}
 
 	for _, tt := range tests {
