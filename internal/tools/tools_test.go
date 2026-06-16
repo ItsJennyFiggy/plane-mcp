@@ -5382,3 +5382,573 @@ func TestToolAnnotations(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TestUpdateWorkItem — tests for the update_work_item tool
+// ---------------------------------------------------------------------------
+
+// TestUpdateWorkItem_Success_AllFields — happy path: update name, description,
+// priority, and state together, verifying each lands in the PATCH body.
+func TestUpdateWorkItem_Success_AllFields(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	var capturedBody map[string]any
+	item := &plane.WorkItem{
+		ID:         "wi-1",
+		Name:       "Old Name",
+		SequenceID: 1,
+		Project:    plane.Expandable[plane.Project]{ID: "proj-uuid", Val: &plane.Project{ID: "proj-uuid", Name: "MP"}},
+	}
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedBody = body
+			return &plane.WorkItem{ID: "wi-1", Name: "New Name", SequenceID: 1}, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveStateFn: func(ctx context.Context, projectID, input string) (*plane.State, error) {
+			return &plane.State{ID: "state-uuid", Name: "In Progress"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: New Name\n", nil
+		},
+	}
+
+	newName := "New Name"
+	newDesc := "# Title\n\nBody text"
+	newPriority := "high"
+	newState := "In Progress"
+	args := UpdateWorkItemArgs{
+		Identifier:  "PROJ-1",
+		Name:        &newName,
+		Description: &newDesc,
+		Priority:    &newPriority,
+		State:       &newState,
+	}
+
+	// Act
+	result, err := updateWorkItem(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if capturedBody == nil {
+		t.Fatal("expected UpdateWorkItem to be called")
+	}
+	if got, ok := capturedBody["name"].(string); !ok || got != "New Name" {
+		t.Errorf("body[name] = %v, want 'New Name'", capturedBody["name"])
+	}
+	wantHTML := `<h1 class="editor-heading-block">Title</h1><p>Body text</p>`
+	if got, ok := capturedBody["description_html"].(string); !ok || got != wantHTML {
+		t.Errorf("body[description_html] = %v, want %q", capturedBody["description_html"], wantHTML)
+	}
+	if got, ok := capturedBody["priority"].(string); !ok || got != "high" {
+		t.Errorf("body[priority] = %v, want 'high'", capturedBody["priority"])
+	}
+	if got, ok := capturedBody["state"].(string); !ok || got != "state-uuid" {
+		t.Errorf("body[state] = %v, want 'state-uuid'", capturedBody["state"])
+	}
+}
+
+// TestUpdateWorkItem_NameOnly — update only the name.
+func TestUpdateWorkItem_NameOnly(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	var capturedBody map[string]any
+	item := &plane.WorkItem{
+		ID:         "wi-1",
+		Name:       "Old",
+		SequenceID: 42,
+		Project:    plane.Expandable[plane.Project]{ID: "proj-uuid"},
+	}
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedBody = body
+			return &plane.WorkItem{ID: "wi-1", Name: "Renamed", SequenceID: 42}, nil
+		},
+	}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: Renamed\n", nil
+		},
+	}
+
+	newName := "Renamed"
+	args := UpdateWorkItemArgs{
+		Identifier: "PROJ-42",
+		Name:       &newName,
+	}
+
+	// Act
+	result, err := updateWorkItem(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if len(capturedBody) != 1 || capturedBody["name"] != "Renamed" {
+		t.Errorf("body = %v, want only name='Renamed'", capturedBody)
+	}
+}
+
+// TestUpdateWorkItem_DescriptionOnly — update only description, verifying HTML conversion.
+func TestUpdateWorkItem_DescriptionOnly(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	var capturedBody map[string]any
+	item := &plane.WorkItem{
+		ID:         "wi-1",
+		Name:       "Task",
+		SequenceID: 5,
+		Project:    plane.Expandable[plane.Project]{ID: "proj-uuid"},
+	}
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedBody = body
+			return item, nil
+		},
+	}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: Task\n", nil
+		},
+	}
+
+	newDesc := "**bold** and *italic*"
+	args := UpdateWorkItemArgs{
+		Identifier:  "PROJ-5",
+		Description: &newDesc,
+	}
+
+	// Act
+	result, err := updateWorkItem(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	wantHTML := "<p><strong>bold</strong> and <em>italic</em></p>"
+	if got, ok := capturedBody["description_html"].(string); !ok || got != wantHTML {
+		t.Errorf("body[description_html] = %v, want %q", capturedBody["description_html"], wantHTML)
+	}
+	if _, hasName := capturedBody["name"]; hasName {
+		t.Error("body must not contain 'name' when Name is nil")
+	}
+}
+
+// TestUpdateWorkItem_PriorityOnly — update only the priority.
+func TestUpdateWorkItem_PriorityOnly(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	var capturedBody map[string]any
+	item := &plane.WorkItem{
+		ID:         "wi-1",
+		Name:       "Task",
+		SequenceID: 3,
+		Project:    plane.Expandable[plane.Project]{ID: "proj-uuid"},
+	}
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedBody = body
+			return item, nil
+		},
+	}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: Task\n", nil
+		},
+	}
+
+	newPriority := "urgent"
+	args := UpdateWorkItemArgs{
+		Identifier: "PROJ-3",
+		Priority:   &newPriority,
+	}
+
+	// Act
+	result, err := updateWorkItem(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if len(capturedBody) != 1 || capturedBody["priority"] != "urgent" {
+		t.Errorf("body = %v, want only priority='urgent'", capturedBody)
+	}
+}
+
+// TestUpdateWorkItem_StateOnly — update only the state, verifying state resolution.
+func TestUpdateWorkItem_StateOnly(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	var capturedBody map[string]any
+	item := &plane.WorkItem{
+		ID:         "wi-1",
+		Name:       "Task",
+		SequenceID: 7,
+		Project:    plane.Expandable[plane.Project]{ID: "proj-uuid"},
+	}
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedBody = body
+			return item, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveStateFn: func(ctx context.Context, projectID, input string) (*plane.State, error) {
+			return &plane.State{ID: "state-done", Name: "Done"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: Task\n", nil
+		},
+	}
+
+	newState := "Done"
+	args := UpdateWorkItemArgs{
+		Identifier: "PROJ-7",
+		State:      &newState,
+	}
+
+	// Act
+	result, err := updateWorkItem(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if len(capturedBody) != 1 || capturedBody["state"] != "state-done" {
+		t.Errorf("body = %v, want only state='state-done'", capturedBody)
+	}
+}
+
+// TestUpdateWorkItem_NoFields — error when no optional fields are provided.
+func TestUpdateWorkItem_NoFields(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	item := &plane.WorkItem{
+		ID:         "wi-1",
+		Name:       "Task",
+		SequenceID: 1,
+		Project:    plane.Expandable[plane.Project]{ID: "proj-uuid"},
+	}
+	updateCalled := false
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			updateCalled = true
+			return item, nil
+		},
+	}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{}
+
+	args := UpdateWorkItemArgs{Identifier: "PROJ-1"}
+
+	// Act
+	result, err := updateWorkItem(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when no fields are provided")
+	}
+	if updateCalled {
+		t.Error("UpdateWorkItem must not be called when no fields are provided")
+	}
+}
+
+// TestUpdateWorkItem_InvalidIdentifier — error on invalid identifier.
+func TestUpdateWorkItem_InvalidIdentifier(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	client := &mockClient{}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{}
+
+	args := UpdateWorkItemArgs{Identifier: "not-valid"}
+	newName := "X"
+	args.Name = &newName
+
+	// Act
+	result, err := updateWorkItem(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for invalid identifier")
+	}
+}
+
+// TestUpdateWorkItem_GetWorkItemFails — error when fetching the work item fails.
+func TestUpdateWorkItem_GetWorkItemFails(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return nil, errors.New("not found")
+		},
+	}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{}
+
+	newName := "X"
+	args := UpdateWorkItemArgs{Identifier: "PROJ-99", Name: &newName}
+
+	// Act
+	result, err := updateWorkItem(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when get fails")
+	}
+}
+
+// TestUpdateWorkItem_StateResolutionFails — error when state can't be resolved.
+func TestUpdateWorkItem_StateResolutionFails(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	item := &plane.WorkItem{
+		ID:         "wi-1",
+		Name:       "Task",
+		SequenceID: 1,
+		Project:    plane.Expandable[plane.Project]{ID: "proj-uuid"},
+	}
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveStateFn: func(ctx context.Context, projectID, input string) (*plane.State, error) {
+			return nil, errors.New("state not found: Bogus")
+		},
+	}
+	formatter := &mockFormatter{}
+
+	newState := "Bogus"
+	args := UpdateWorkItemArgs{Identifier: "PROJ-1", State: &newState}
+
+	// Act
+	result, err := updateWorkItem(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when state resolution fails")
+	}
+}
+
+// TestUpdateWorkItem_UpdateFails — error when the PATCH request fails.
+func TestUpdateWorkItem_UpdateFails(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	item := &plane.WorkItem{
+		ID:         "wi-1",
+		Name:       "Task",
+		SequenceID: 1,
+		Project:    plane.Expandable[plane.Project]{ID: "proj-uuid"},
+	}
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			return nil, errors.New("server error")
+		},
+	}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{}
+
+	newPriority := "low"
+	args := UpdateWorkItemArgs{Identifier: "PROJ-1", Priority: &newPriority}
+
+	// Act
+	result, err := updateWorkItem(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when update fails")
+	}
+}
+
+// TestUpdateWorkItem_FormatterFails — error when formatting the updated item fails.
+func TestUpdateWorkItem_FormatterFails(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	item := &plane.WorkItem{
+		ID:         "wi-1",
+		Name:       "Task",
+		SequenceID: 1,
+		Project:    plane.Expandable[plane.Project]{ID: "proj-uuid"},
+	}
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			return item, nil
+		},
+	}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "", errors.New("format failed")
+		},
+	}
+
+	newName := "X"
+	args := UpdateWorkItemArgs{Identifier: "PROJ-1", Name: &newName}
+
+	// Act
+	result, err := updateWorkItem(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when formatter fails")
+	}
+}
+
+// TestUpdateWorkItem_ProjectValFallback — uses item.Project.ID when Val is nil.
+func TestUpdateWorkItem_ProjectValFallback(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	var capturedProjectID string
+	item := &plane.WorkItem{
+		ID:         "wi-1",
+		Name:       "Task",
+		SequenceID: 1,
+		Project:    plane.Expandable[plane.Project]{ID: "proj-fallback"},
+	}
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedProjectID = projectID
+			return item, nil
+		},
+	}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: Task\n", nil
+		},
+	}
+
+	newName := "X"
+	args := UpdateWorkItemArgs{Identifier: "PROJ-1", Name: &newName}
+
+	// Act
+	result, err := updateWorkItem(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if capturedProjectID != "proj-fallback" {
+		t.Errorf("expected projectID='proj-fallback', got %q", capturedProjectID)
+	}
+}
+
+// TestUpdateWorkItem_DetailIsFull — the formatter is called with detail="full".
+func TestUpdateWorkItem_DetailIsFull(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	var capturedDetail string
+	item := &plane.WorkItem{
+		ID:         "wi-1",
+		Name:       "Task",
+		SequenceID: 1,
+		Project:    plane.Expandable[plane.Project]{ID: "proj-uuid"},
+	}
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return item, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			return item, nil
+		},
+	}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			capturedDetail = detail
+			return "name: Task\n", nil
+		},
+	}
+
+	newName := "X"
+	args := UpdateWorkItemArgs{Identifier: "PROJ-1", Name: &newName}
+
+	// Act
+	result, err := updateWorkItem(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if capturedDetail != "full" {
+		t.Errorf("expected detail='full', got %q", capturedDetail)
+	}
+}
