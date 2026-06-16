@@ -5310,3 +5310,120 @@ func TestGetLastComment_ClientError(t *testing.T) {
 		t.Errorf("expected API error message, got %q", text)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TestToolAnnotations — verifies that registered tools include the expected
+// ToolAnnotations in the MCP list-tools response.
+// ---------------------------------------------------------------------------
+
+func TestToolAnnotations(t *testing.T) {
+	// Arrange — create a server, register all tools with full profile.
+	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
+	client := &mockClient{}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{}
+	cfg := &config.Config{PlaneMCPProfile: "full"}
+
+	registerWithDeps(server, client, resolver, formatter, cfg)
+
+	// Set up an in-memory client connection so we can call ListTools.
+	ct, st := mcp.NewInMemoryTransports()
+	ss, err := server.Connect(context.Background(), st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer ss.Close()
+
+	mcpClient := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0"}, nil)
+	cs, err := mcpClient.Connect(context.Background(), ct, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer cs.Close()
+
+	// Act — retrieve the tool list from the server.
+	ctx := context.Background()
+	res, err := cs.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListTools failed: %v", err)
+	}
+
+	// Index tools by name.
+	toolsByName := make(map[string]*mcp.Tool)
+	for _, tool := range res.Tools {
+		toolsByName[tool.Name] = tool
+	}
+
+	// Assert — verify expected annotations for each category.
+
+	// Read-only tools: readOnlyHint=true
+	readOnlyTools := []string{
+		"find_my_work", "get_work_item", "list_labels", "list_projects",
+		"search_work_items", "list_states", "list_comments", "get_last_comment",
+		"list_work_items",
+	}
+	for _, name := range readOnlyTools {
+		tool, ok := toolsByName[name]
+		if !ok {
+			t.Errorf("tool %q not found in ListTools response", name)
+			continue
+		}
+		if tool.Annotations == nil {
+			t.Errorf("tool %q: expected Annotations, got nil", name)
+			continue
+		}
+		if !tool.Annotations.ReadOnlyHint {
+			t.Errorf("tool %q: expected ReadOnlyHint=true, got false", name)
+		}
+	}
+
+	// Idempotent read-write tools: readOnlyHint=false, idempotentHint=true
+	idempotentTools := []string{"report_progress", "add_label", "remove_label", "assign_work_item"}
+	for _, name := range idempotentTools {
+		tool, ok := toolsByName[name]
+		if !ok {
+			t.Errorf("tool %q not found in ListTools response", name)
+			continue
+		}
+		if tool.Annotations == nil {
+			t.Errorf("tool %q: expected Annotations, got nil", name)
+			continue
+		}
+		if tool.Annotations.ReadOnlyHint {
+			t.Errorf("tool %q: expected ReadOnlyHint=false, got true", name)
+		}
+		if !tool.Annotations.IdempotentHint {
+			t.Errorf("tool %q: expected IdempotentHint=true, got false", name)
+		}
+	}
+
+	// Non-destructive write tools: readOnlyHint=false, destructiveHint=false
+	nonDestructiveTools := []string{"create_task", "submit_for_review"}
+	for _, name := range nonDestructiveTools {
+		tool, ok := toolsByName[name]
+		if !ok {
+			t.Errorf("tool %q not found in ListTools response", name)
+			continue
+		}
+		if tool.Annotations == nil {
+			t.Errorf("tool %q: expected Annotations, got nil", name)
+			continue
+		}
+		if tool.Annotations.ReadOnlyHint {
+			t.Errorf("tool %q: expected ReadOnlyHint=false, got true", name)
+		}
+		if tool.Annotations.DestructiveHint == nil {
+			t.Errorf("tool %q: expected DestructiveHint to be set, got nil", name)
+		} else if *tool.Annotations.DestructiveHint {
+			t.Errorf("tool %q: expected DestructiveHint=false, got true", name)
+		}
+	}
+
+	// Blanket check: every tool in the ListTools response must have non-nil
+	// Annotations to prevent future additions from being left unannotated.
+	for _, tool := range res.Tools {
+		if tool.Annotations == nil {
+			t.Errorf("tool %q is missing Annotations; every tool must be annotated", tool.Name)
+		}
+	}
+}
