@@ -1264,14 +1264,9 @@ func searchWorkItems(ctx context.Context, args SearchWorkItemsArgs, client plane
 
 	var items []plane.WorkItem
 	for _, r := range results {
-		seqID, err := strconv.Atoi(r.SequenceID)
+		item, err := client.GetWorkItemByIdentifier(ctx, r.ProjectIdentifier, r.SequenceID)
 		if err != nil {
-			log.Printf("search_work_items: skipping result %s: failed to parse sequence_id %q: %v", r.ID, r.SequenceID, err)
-			continue
-		}
-		item, err := client.GetWorkItemByIdentifier(ctx, r.ProjectIdentifier, seqID)
-		if err != nil {
-			log.Printf("search_work_items: skipping %s-%s: %v", r.ProjectIdentifier, r.SequenceID, err)
+			log.Printf("search_work_items: skipping %s-%d: %v", r.ProjectIdentifier, r.SequenceID, err)
 			continue
 		}
 		items = append(items, *item)

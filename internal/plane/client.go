@@ -118,7 +118,7 @@ type Member struct {
 type SearchWorkItemResult struct {
 	ID                string `json:"id"`
 	Name              string `json:"name"`
-	SequenceID        string `json:"sequence_id"`
+	SequenceID        int    `json:"sequence_id"`
 	ProjectIdentifier string `json:"project__identifier"`
 	ProjectID         string `json:"project_id"`
 	WorkspaceSlug     string `json:"workspace__slug"`

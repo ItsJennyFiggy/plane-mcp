@@ -935,7 +935,7 @@ func TestClientSearchWorkItems(t *testing.T) {
 			if req.URL.Query().Get("project_id") != "proj-1" {
 				t.Errorf("expected project_id=proj-1, got '%s'", req.URL.Query().Get("project_id"))
 			}
-			body := `{"issues": [{"id": "wi-1", "name": "Fix login", "sequence_id": "1", "project__identifier": "PROJ", "project_id": "proj-1", "workspace__slug": "test-workspace"}, {"id": "wi-2", "name": "Login error", "sequence_id": "2", "project__identifier": "PROJ", "project_id": "proj-1", "workspace__slug": "test-workspace"}]}`
+			body := `{"issues": [{"id": "wi-1", "name": "Fix login", "sequence_id": 1, "project__identifier": "PROJ", "project_id": "proj-1", "workspace__slug": "test-workspace"}, {"id": "wi-2", "name": "Login error", "sequence_id": 2, "project__identifier": "PROJ", "project_id": "proj-1", "workspace__slug": "test-workspace"}]}`
 			return &http.Response{
 				StatusCode: 200,
 				Body:       io.NopCloser(strings.NewReader(body)),
@@ -955,7 +955,7 @@ func TestClientSearchWorkItems(t *testing.T) {
 		if len(results) != 2 {
 			t.Errorf("expected 2 results, got %d", len(results))
 		}
-		if results[0].ID != "wi-1" || results[0].Name != "Fix login" || results[0].SequenceID != "1" {
+		if results[0].ID != "wi-1" || results[0].Name != "Fix login" || results[0].SequenceID != 1 {
 			t.Errorf("unexpected result[0]: %+v", results[0])
 		}
 		if results[0].ProjectIdentifier != "PROJ" {
