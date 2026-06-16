@@ -5079,7 +5079,7 @@ func TestListComments_Success(t *testing.T) {
 	}
 }
 
-// TestListComments_Empty — empty result returns "[]".
+// TestListComments_Empty — empty result returns YAML-marshaled empty list.
 func TestListComments_Empty(t *testing.T) {
 	ctx := context.Background()
 	client := &mockClient{
@@ -5110,8 +5110,8 @@ func TestListComments_Empty(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *mcp.TextContent, got %T", result.Content[0])
 	}
-	if tc.Text != "[]" {
-		t.Errorf("expected '[]' for empty comments, got: %s", tc.Text)
+	if tc.Text != "[]\n" {
+		t.Errorf("expected '[]\\n' for empty comments (YAML-marshaled), got: %s", tc.Text)
 	}
 }
 

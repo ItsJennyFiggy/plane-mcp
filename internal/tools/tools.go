@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ItsJennyFiggy/plane-mcp/internal/config"
 	"github.com/ItsJennyFiggy/plane-mcp/internal/plane"
@@ -588,20 +589,27 @@ func listComments(ctx context.Context, args ListCommentsArgs, client planeClient
 		return toolError(fmt.Sprintf("failed to list comments: %v", err)), nil
 	}
 
-	if len(comments) == 0 {
-		return toolText("[]"), nil
-	}
-
-	// Sort by CreatedAt ascending
-	sort.Slice(comments, func(i, j int) bool {
-		return comments[i].CreatedAt < comments[j].CreatedAt
-	})
-
 	type commentOut struct {
 		Author    string `yaml:"author"`
 		CreatedAt string `yaml:"created_at"`
 		Body      string `yaml:"body"`
 	}
+
+	if len(comments) == 0 {
+		yamlBytes, _ := yaml.Marshal([]commentOut{})
+		return toolText(string(yamlBytes)), nil
+	}
+
+	// Sort by CreatedAt ascending (parsed as time for robustness).
+	sort.Slice(comments, func(i, j int) bool {
+		ti, errI := time.Parse(time.RFC3339, comments[i].CreatedAt)
+		tj, errJ := time.Parse(time.RFC3339, comments[j].CreatedAt)
+		if errI != nil || errJ != nil {
+			// Fall back to lexicographic comparison on parse failure.
+			return comments[i].CreatedAt < comments[j].CreatedAt
+		}
+		return ti.Before(tj)
+	})
 
 	out := make([]commentOut, len(comments))
 	for i, c := range comments {
