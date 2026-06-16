@@ -500,6 +500,7 @@ type mockClient struct {
 	listWorkItemRelationsFn   func(ctx context.Context, projectID, workItemID string) (*plane.WorkItemRelations, error)
 	createWorkItemRelationFn  func(ctx context.Context, projectID, workItemID, relationType string, issues []string) error
 	removeWorkItemRelationFn  func(ctx context.Context, projectID, workItemID, relatedIssue string) error
+	deleteWorkItemFn          func(ctx context.Context, projectID, workItemID string) error
 }
 
 func (m *mockClient) ListProjects(ctx context.Context) ([]plane.Project, error) {
@@ -558,6 +559,9 @@ func (m *mockClient) CreateWorkItemRelation(ctx context.Context, projectID, work
 }
 func (m *mockClient) RemoveWorkItemRelation(ctx context.Context, projectID, workItemID, relatedIssue string) error {
 	return m.removeWorkItemRelationFn(ctx, projectID, workItemID, relatedIssue)
+}
+func (m *mockClient) DeleteWorkItem(ctx context.Context, projectID, workItemID string) error {
+	return m.deleteWorkItemFn(ctx, projectID, workItemID)
 }
 
 // mockResolver is a test double for planeResolver.
@@ -6787,4 +6791,701 @@ func TestRegisterWithDeps_IncludesParentTools(t *testing.T) {
 
 	// Should not panic — verifies set_parent, clear_parent, list_children register cleanly.
 	registerWithDeps(server, client, resolver, formatter, cfg)
+}
+
+// ---------------------------------------------------------------------------
+// moveWorkItem tests
+// ---------------------------------------------------------------------------
+
+func TestMoveWorkItem_InvalidIdentifier(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{}
+	args := MoveWorkItemArgs{Identifier: "invalid", TargetProject: "TGT"}
+
+	result, err := moveWorkItem(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for invalid identifier")
+	}
+}
+
+func TestMoveWorkItem_TargetProjectNotFound(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return nil, errors.New("project not found")
+		},
+	}
+	formatter := &mockFormatter{}
+	args := MoveWorkItemArgs{Identifier: "PROJ-1", TargetProject: "NONEXISTENT"}
+
+	result, err := moveWorkItem(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when target project not found")
+	}
+}
+
+func TestMoveWorkItem_SourceItemNotFound(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return nil, errors.New("not found")
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "tgt-proj", Name: "Target", Identifier: "TGT"}, nil
+		},
+	}
+	formatter := &mockFormatter{}
+	args := MoveWorkItemArgs{Identifier: "PROJ-1", TargetProject: "Target"}
+
+	result, err := moveWorkItem(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when source item not found")
+	}
+}
+
+func TestMoveWorkItem_TargetCreationError(t *testing.T) {
+	ctx := context.Background()
+	srcItem := &plane.WorkItem{
+		ID:       "src-wi",
+		Name:     "Test Item",
+		SequenceID: 1,
+		Project:  plane.Expandable[plane.Project]{ID: "src-proj"},
+		State:    plane.Expandable[plane.State]{ID: "state-1", Val: &plane.State{Name: "Todo", Group: "unstarted"}},
+	}
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return srcItem, nil
+		},
+		listStatesFn: func(ctx context.Context, projectID string) ([]plane.State, error) {
+			return []plane.State{
+				{ID: "s1", Name: "Todo", Group: "unstarted"},
+			}, nil
+		},
+		createWorkItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error) {
+			return nil, errors.New("creation failed")
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "tgt-proj", Name: "Target", Identifier: "TGT"}, nil
+		},
+	}
+	formatter := &mockFormatter{}
+	args := MoveWorkItemArgs{Identifier: "PROJ-1", TargetProject: "Target"}
+
+	result, err := moveWorkItem(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when target creation fails")
+	}
+}
+
+func TestMoveWorkItem_DeleteOriginalTrue(t *testing.T) {
+	ctx := context.Background()
+	srcItem := &plane.WorkItem{
+		ID:         "src-wi",
+		Name:       "Test Item",
+		SequenceID: 1,
+		Project:    plane.Expandable[plane.Project]{ID: "src-proj"},
+		State:      plane.Expandable[plane.State]{ID: "state-1", Val: &plane.State{Name: "Todo", Group: "unstarted"}},
+	}
+	createdItem := &plane.WorkItem{
+		ID:         "tgt-wi",
+		Name:       "Test Item",
+		SequenceID: 42,
+		Project:    plane.Expandable[plane.Project]{ID: "tgt-proj"},
+		State:      plane.Expandable[plane.State]{ID: "s1", Val: &plane.State{Name: "Todo", Group: "unstarted"}},
+	}
+
+	var deletedProjectID, deletedItemID string
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return srcItem, nil
+		},
+		listStatesFn: func(ctx context.Context, projectID string) ([]plane.State, error) {
+			return []plane.State{
+				{ID: "s1", Name: "Todo", Group: "unstarted"},
+			}, nil
+		},
+		createWorkItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error) {
+			return createdItem, nil
+		},
+		deleteWorkItemFn: func(ctx context.Context, projectID, workItemID string) error {
+			deletedProjectID = projectID
+			deletedItemID = workItemID
+			return nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "tgt-proj", Name: "Target", Identifier: "TGT"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: Test Item\n", nil
+		},
+	}
+	args := MoveWorkItemArgs{Identifier: "PROJ-1", TargetProject: "Target", DeleteOriginal: true}
+
+	result, err := moveWorkItem(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected success, got IsError=true: %+v", result.Content)
+	}
+	if deletedProjectID != "src-proj" {
+		t.Errorf("expected delete on src-proj, got %q", deletedProjectID)
+	}
+	if deletedItemID != "src-wi" {
+		t.Errorf("expected delete of src-wi, got %q", deletedItemID)
+	}
+	// Verify output contains the new identifier
+	tc, ok := result.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected *mcp.TextContent, got %T", result.Content[0])
+	}
+	if !strings.Contains(tc.Text, "TGT-42") {
+		t.Errorf("expected output to contain new identifier TGT-42, got: %s", tc.Text)
+	}
+}
+
+func TestMoveWorkItem_DeleteOriginalFalse(t *testing.T) {
+	ctx := context.Background()
+	srcItem := &plane.WorkItem{
+		ID:         "src-wi",
+		Name:       "Original Title",
+		SequenceID: 1,
+		Project:    plane.Expandable[plane.Project]{ID: "src-proj"},
+		State:      plane.Expandable[plane.State]{ID: "state-1", Val: &plane.State{Name: "In Progress", Group: "started"}},
+	}
+	createdItem := &plane.WorkItem{
+		ID:         "tgt-wi",
+		Name:       "Original Title",
+		SequenceID: 99,
+		Project:    plane.Expandable[plane.Project]{ID: "tgt-proj"},
+		State:      plane.Expandable[plane.State]{ID: "s2", Val: &plane.State{Name: "In Progress", Group: "started"}},
+	}
+
+	var updatedProjectID, updatedItemID string
+	var updatedBody map[string]any
+	var relationProjectID, relationItemID, relationType string
+	var relationIssues []string
+
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return srcItem, nil
+		},
+		listStatesFn: func(ctx context.Context, projectID string) ([]plane.State, error) {
+			if projectID == "tgt-proj" {
+				return []plane.State{
+					{ID: "s1", Name: "Backlog", Group: "backlog"},
+					{ID: "s2", Name: "In Progress", Group: "started"},
+				}, nil
+			}
+			// Source project states
+			return []plane.State{
+				{ID: "state-1", Name: "In Progress", Group: "started"},
+				{ID: "state-cancelled", Name: "Cancelled", Group: "cancelled"},
+			}, nil
+		},
+		createWorkItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error) {
+			return createdItem, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			updatedProjectID = projectID
+			updatedItemID = itemID
+			updatedBody = body
+			return srcItem, nil
+		},
+		createWorkItemRelationFn: func(ctx context.Context, projectID, workItemID, rType string, issues []string) error {
+			relationProjectID = projectID
+			relationItemID = workItemID
+			relationType = rType
+			relationIssues = issues
+			return nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "tgt-proj", Name: "Target", Identifier: "TGT"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: Original Title\n", nil
+		},
+	}
+	args := MoveWorkItemArgs{Identifier: "PROJ-1", TargetProject: "Target", DeleteOriginal: false}
+
+	result, err := moveWorkItem(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected success, got IsError=true: %+v", result.Content)
+	}
+
+	// Verify original was renamed
+	if updatedProjectID != "src-proj" {
+		t.Errorf("expected update on src-proj, got %q", updatedProjectID)
+	}
+	if updatedItemID != "src-wi" {
+		t.Errorf("expected update of src-wi, got %q", updatedItemID)
+	}
+	wantName := "MOVED TO TGT-99 - Original Title"
+	if got, ok := updatedBody["name"].(string); !ok || got != wantName {
+		t.Errorf("expected name %q, got %v", wantName, updatedBody["name"])
+	}
+	// Verify state was set to cancelled
+	if got, ok := updatedBody["state"].(string); !ok || got != "state-cancelled" {
+		t.Errorf("expected state 'state-cancelled', got %v", updatedBody["state"])
+	}
+
+	// Verify duplicate relation
+	if relationProjectID != "src-proj" {
+		t.Errorf("expected relation on src-proj, got %q", relationProjectID)
+	}
+	if relationItemID != "src-wi" {
+		t.Errorf("expected relation on src-wi, got %q", relationItemID)
+	}
+	if relationType != "duplicate" {
+		t.Errorf("expected relation type 'duplicate', got %q", relationType)
+	}
+	if len(relationIssues) != 1 || relationIssues[0] != "tgt-wi" {
+		t.Errorf("expected issues [tgt-wi], got %v", relationIssues)
+	}
+}
+
+func TestMoveWorkItem_StateGroupMatchingFallback(t *testing.T) {
+	ctx := context.Background()
+	srcItem := &plane.WorkItem{
+		ID:         "src-wi",
+		Name:       "Test Item",
+		SequenceID: 1,
+		Project:    plane.Expandable[plane.Project]{ID: "src-proj"},
+		// Source state is "To Do" — not present in target project by name.
+		State: plane.Expandable[plane.State]{ID: "state-1", Val: &plane.State{Name: "To Do", Group: "unstarted"}},
+	}
+	createdItem := &plane.WorkItem{
+		ID:         "tgt-wi",
+		Name:       "Test Item",
+		SequenceID: 5,
+		Project:    plane.Expandable[plane.Project]{ID: "tgt-proj"},
+		State:      plane.Expandable[plane.State]{ID: "s-backlog", Val: &plane.State{Name: "Backlog", Group: "backlog"}},
+	}
+
+	var capturedBody map[string]any
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return srcItem, nil
+		},
+		listStatesFn: func(ctx context.Context, projectID string) ([]plane.State, error) {
+			if projectID == "tgt-proj" {
+				// Target has "Backlog" (unstarted group) but no "To Do" by name.
+				return []plane.State{
+					{ID: "s-backlog", Name: "Backlog", Group: "unstarted"},
+					{ID: "s-done", Name: "Done", Group: "completed"},
+				}, nil
+			}
+			return []plane.State{
+				{ID: "state-1", Name: "To Do", Group: "unstarted"},
+			}, nil
+		},
+		createWorkItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedBody = body
+			return createdItem, nil
+		},
+		deleteWorkItemFn: func(ctx context.Context, projectID, workItemID string) error {
+			return nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "tgt-proj", Name: "Target", Identifier: "TGT"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: Test Item\n", nil
+		},
+	}
+	args := MoveWorkItemArgs{Identifier: "PROJ-1", TargetProject: "Target", DeleteOriginal: true}
+
+	result, err := moveWorkItem(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected success, got IsError=true: %+v", result.Content)
+	}
+
+	// Should have matched by group "unstarted" → "Backlog"
+	if got, ok := capturedBody["state"].(string); !ok || got != "s-backlog" {
+		t.Errorf("expected state 's-backlog' (matched by group), got %v", capturedBody["state"])
+	}
+
+	// Should contain warning about state name difference
+	tc := result.Content[0].(*mcp.TextContent)
+	if !strings.Contains(tc.Text, "differs from original state") {
+		t.Errorf("expected warning about state name difference, got: %s", tc.Text)
+	}
+}
+
+func TestMoveWorkItem_NoCancelledStateFallback(t *testing.T) {
+	ctx := context.Background()
+	srcItem := &plane.WorkItem{
+		ID:         "src-wi",
+		Name:       "Test Item",
+		SequenceID: 1,
+		Project:    plane.Expandable[plane.Project]{ID: "src-proj"},
+		State:      plane.Expandable[plane.State]{ID: "state-1", Val: &plane.State{Name: "Backlog", Group: "backlog"}},
+	}
+	createdItem := &plane.WorkItem{
+		ID:         "tgt-wi",
+		Name:       "Test Item",
+		SequenceID: 7,
+		Project:    plane.Expandable[plane.Project]{ID: "tgt-proj"},
+		State:      plane.Expandable[plane.State]{ID: "s1", Val: &plane.State{Name: "Backlog", Group: "backlog"}},
+	}
+
+	var updatedBody map[string]any
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return srcItem, nil
+		},
+		listStatesFn: func(ctx context.Context, projectID string) ([]plane.State, error) {
+			// No cancelled state anywhere
+			return []plane.State{
+				{ID: "s1", Name: "Backlog", Group: "backlog"},
+				{ID: "s2", Name: "Done", Group: "completed"},
+			}, nil
+		},
+		createWorkItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error) {
+			return createdItem, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			updatedBody = body
+			return srcItem, nil
+		},
+		createWorkItemRelationFn: func(ctx context.Context, projectID, workItemID, rType string, issues []string) error {
+			return nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "tgt-proj", Name: "Target", Identifier: "TGT"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: Test Item\n", nil
+		},
+	}
+	args := MoveWorkItemArgs{Identifier: "PROJ-1", TargetProject: "Target", DeleteOriginal: false}
+
+	result, err := moveWorkItem(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected success, got IsError=true: %+v", result.Content)
+	}
+
+	// Verify state was NOT set (no cancelled state available)
+	if _, ok := updatedBody["state"]; ok {
+		t.Errorf("expected no state in update body when no cancelled state exists, got %v", updatedBody["state"])
+	}
+	// Verify name was still set (rename happened)
+	if got, ok := updatedBody["name"].(string); !ok || !strings.HasPrefix(got, "MOVED TO") {
+		t.Errorf("expected name to start with MOVED TO, got %v", updatedBody["name"])
+	}
+}
+
+func TestMoveWorkItem_LabelNotFoundInTarget(t *testing.T) {
+	ctx := context.Background()
+	srcItem := &plane.WorkItem{
+		ID:         "src-wi",
+		Name:       "Test Item",
+		SequenceID: 1,
+		Project:    plane.Expandable[plane.Project]{ID: "src-proj"},
+		State:      plane.Expandable[plane.State]{ID: "state-1", Val: &plane.State{Name: "Todo", Group: "unstarted"}},
+		Labels: []plane.Expandable[plane.Label]{
+			{ID: "lbl-1", Val: &plane.Label{Name: "bug"}},
+			{ID: "lbl-2", Val: &plane.Label{Name: "feature"}},
+		},
+	}
+	createdItem := &plane.WorkItem{
+		ID:         "tgt-wi",
+		Name:       "Test Item",
+		SequenceID: 3,
+		Project:    plane.Expandable[plane.Project]{ID: "tgt-proj"},
+		State:      plane.Expandable[plane.State]{ID: "s1", Val: &plane.State{Name: "Todo", Group: "unstarted"}},
+	}
+
+	var capturedBody map[string]any
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return srcItem, nil
+		},
+		listStatesFn: func(ctx context.Context, projectID string) ([]plane.State, error) {
+			return []plane.State{
+				{ID: "s1", Name: "Todo", Group: "unstarted"},
+			}, nil
+		},
+		createWorkItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error) {
+			capturedBody = body
+			return createdItem, nil
+		},
+		deleteWorkItemFn: func(ctx context.Context, projectID, workItemID string) error {
+			return nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "tgt-proj", Name: "Target", Identifier: "TGT"}, nil
+		},
+		resolveLabelFn: func(ctx context.Context, projectID, input string) (*plane.Label, error) {
+			// "bug" resolves, "feature" does not
+			if input == "bug" {
+				return &plane.Label{ID: "lbl-tgt-1", Name: "bug"}, nil
+			}
+			return nil, errors.New("label not found")
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: Test Item\n", nil
+		},
+	}
+	args := MoveWorkItemArgs{Identifier: "PROJ-1", TargetProject: "Target", DeleteOriginal: true}
+
+	result, err := moveWorkItem(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected success despite label resolution failure, got IsError=true: %+v", result.Content)
+	}
+
+	// Only "bug" label should be present
+	labels, _ := capturedBody["labels"].([]string)
+	if len(labels) != 1 || labels[0] != "lbl-tgt-1" {
+		t.Errorf("expected only label 'lbl-tgt-1', got %v", labels)
+	}
+
+	// Should contain warning about the missing label
+	tc := result.Content[0].(*mcp.TextContent)
+	if !strings.Contains(tc.Text, "feature") || !strings.Contains(tc.Text, "not found") {
+		t.Errorf("expected warning about 'feature' label not found, got: %s", tc.Text)
+	}
+}
+
+func TestMoveWorkItem_ListStatesFailsForTarget(t *testing.T) {
+	ctx := context.Background()
+	srcItem := &plane.WorkItem{
+		ID:         "src-wi",
+		Name:       "Test Item",
+		SequenceID: 1,
+		Project:    plane.Expandable[plane.Project]{ID: "src-proj"},
+		State:      plane.Expandable[plane.State]{ID: "state-1"},
+	}
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return srcItem, nil
+		},
+		listStatesFn: func(ctx context.Context, projectID string) ([]plane.State, error) {
+			if projectID == "tgt-proj" {
+				return nil, errors.New("states api error")
+			}
+			return nil, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "tgt-proj", Name: "Target", Identifier: "TGT"}, nil
+		},
+	}
+	formatter := &mockFormatter{}
+	args := MoveWorkItemArgs{Identifier: "PROJ-1", TargetProject: "Target"}
+
+	result, err := moveWorkItem(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when listing target states fails")
+	}
+}
+
+func TestMoveWorkItem_ListStatesFailsForSource(t *testing.T) {
+	ctx := context.Background()
+	srcItem := &plane.WorkItem{
+		ID:         "src-wi",
+		Name:       "Test Item",
+		SequenceID: 1,
+		Project:    plane.Expandable[plane.Project]{ID: "src-proj"},
+		State:      plane.Expandable[plane.State]{ID: "state-1"},
+	}
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return srcItem, nil
+		},
+		listStatesFn: func(ctx context.Context, projectID string) ([]plane.State, error) {
+			if projectID == "src-proj" {
+				return nil, errors.New("states api error")
+			}
+			return []plane.State{{ID: "s1", Name: "Todo", Group: "unstarted"}}, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "tgt-proj", Name: "Target", Identifier: "TGT"}, nil
+		},
+	}
+	formatter := &mockFormatter{}
+	args := MoveWorkItemArgs{Identifier: "PROJ-1", TargetProject: "Target"}
+
+	result, err := moveWorkItem(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when listing source states fails")
+	}
+}
+
+func TestMoveWorkItem_DeleteOriginalFalse_UpdateFails(t *testing.T) {
+	ctx := context.Background()
+	srcItem := &plane.WorkItem{
+		ID:         "src-wi",
+		Name:       "Test Item",
+		SequenceID: 1,
+		Project:    plane.Expandable[plane.Project]{ID: "src-proj"},
+		State:      plane.Expandable[plane.State]{ID: "state-1", Val: &plane.State{Name: "Backlog", Group: "backlog"}},
+	}
+	createdItem := &plane.WorkItem{
+		ID:         "tgt-wi",
+		Name:       "Test Item",
+		SequenceID: 10,
+		Project:    plane.Expandable[plane.Project]{ID: "tgt-proj"},
+		State:      plane.Expandable[plane.State]{ID: "s1", Val: &plane.State{Name: "Backlog", Group: "backlog"}},
+	}
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return srcItem, nil
+		},
+		listStatesFn: func(ctx context.Context, projectID string) ([]plane.State, error) {
+			return []plane.State{
+				{ID: "s1", Name: "Backlog", Group: "backlog"},
+				{ID: "sc", Name: "Cancelled", Group: "cancelled"},
+			}, nil
+		},
+		createWorkItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error) {
+			return createdItem, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			return nil, errors.New("update failed")
+		},
+		createWorkItemRelationFn: func(ctx context.Context, projectID, workItemID, rType string, issues []string) error {
+			return nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "tgt-proj", Name: "Target", Identifier: "TGT"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: Test Item\n", nil
+		},
+	}
+	args := MoveWorkItemArgs{Identifier: "PROJ-1", TargetProject: "Target", DeleteOriginal: false}
+
+	result, err := moveWorkItem(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected success (update failure is a warning, not an error), got IsError=true: %+v", result.Content)
+	}
+	// Should contain warning about update failure
+	tc := result.Content[0].(*mcp.TextContent)
+	if !strings.Contains(tc.Text, "failed to update original") {
+		t.Errorf("expected warning about update failure, got: %s", tc.Text)
+	}
+}
+
+func TestMoveWorkItem_DeleteOriginalTrue_DeleteFails(t *testing.T) {
+	ctx := context.Background()
+	srcItem := &plane.WorkItem{
+		ID:         "src-wi",
+		Name:       "Test Item",
+		SequenceID: 1,
+		Project:    plane.Expandable[plane.Project]{ID: "src-proj"},
+		State:      plane.Expandable[plane.State]{ID: "state-1", Val: &plane.State{Name: "Todo", Group: "unstarted"}},
+	}
+	createdItem := &plane.WorkItem{
+		ID:         "tgt-wi",
+		Name:       "Test Item",
+		SequenceID: 1,
+		Project:    plane.Expandable[plane.Project]{ID: "tgt-proj"},
+		State:      plane.Expandable[plane.State]{ID: "s1", Val: &plane.State{Name: "Todo", Group: "unstarted"}},
+	}
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return srcItem, nil
+		},
+		listStatesFn: func(ctx context.Context, projectID string) ([]plane.State, error) {
+			return []plane.State{{ID: "s1", Name: "Todo", Group: "unstarted"}}, nil
+		},
+		createWorkItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error) {
+			return createdItem, nil
+		},
+		deleteWorkItemFn: func(ctx context.Context, projectID, workItemID string) error {
+			return errors.New("delete failed")
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "tgt-proj", Name: "Target", Identifier: "TGT"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: Test Item\n", nil
+		},
+	}
+	args := MoveWorkItemArgs{Identifier: "PROJ-1", TargetProject: "Target", DeleteOriginal: true}
+
+	result, err := moveWorkItem(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected success (delete failure is a warning), got IsError=true: %+v", result.Content)
+	}
+	// Should contain warning about delete failure
+	tc := result.Content[0].(*mcp.TextContent)
+	if !strings.Contains(tc.Text, "failed to delete original") {
+		t.Errorf("expected warning about delete failure, got: %s", tc.Text)
+	}
 }
