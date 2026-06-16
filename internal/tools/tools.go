@@ -526,6 +526,22 @@ type UpdateWorkItemArgs struct {
 	State       *string `json:"state,omitempty"`
 }
 
+// SetParentArgs are the arguments for the set_parent tool.
+type SetParentArgs struct {
+	Identifier       string `json:"identifier"`
+	ParentIdentifier string `json:"parent_identifier"`
+}
+
+// ClearParentArgs are the arguments for the clear_parent tool.
+type ClearParentArgs struct {
+	Identifier string `json:"identifier"`
+}
+
+// ListChildrenArgs are the arguments for the list_children tool.
+type ListChildrenArgs struct {
+	Identifier string `json:"identifier"`
+}
+
 // commentOut is the YAML-serializable representation of a single comment,
 // shared by list_comments and get_last_comment. Field order is fixed to
 // author, created_at, body — matching the expected output shape.
@@ -945,6 +961,115 @@ func listRelations(ctx context.Context, args ListRelationsArgs, client planeClie
 	}
 
 	return toolText(strings.TrimSpace(b.String())), nil
+}
+
+// setParent implements the set_parent tool logic.
+// It sets the parent of a work item to another work item.
+func setParent(ctx context.Context, args SetParentArgs, client planeClient) (*mcp.CallToolResult, error) {
+	// Resolve child work item
+	childProj, childSeq, err := parseIdentifier(args.Identifier)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	childItem, err := client.GetWorkItemByIdentifier(ctx, childProj, childSeq)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
+	}
+
+	// Resolve parent work item
+	parentProj, parentSeq, err := parseIdentifier(args.ParentIdentifier)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	parentItem, err := client.GetWorkItemByIdentifier(ctx, parentProj, parentSeq)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to get parent work item %s: %v", args.ParentIdentifier, err)), nil
+	}
+
+	_, err = client.UpdateWorkItem(ctx, childItem.Project.ID, childItem.ID, map[string]any{"parent": parentItem.ID})
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to set parent: %v", err)), nil
+	}
+
+	return toolText(fmt.Sprintf("Parent %s set for %s.", args.ParentIdentifier, args.Identifier)), nil
+}
+
+// clearParent implements the clear_parent tool logic.
+// It removes the parent reference from a work item.
+func clearParent(ctx context.Context, args ClearParentArgs, client planeClient) (*mcp.CallToolResult, error) {
+	proj, seq, err := parseIdentifier(args.Identifier)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	item, err := client.GetWorkItemByIdentifier(ctx, proj, seq)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
+	}
+
+	_, err = client.UpdateWorkItem(ctx, item.Project.ID, item.ID, map[string]any{"parent": nil})
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to clear parent: %v", err)), nil
+	}
+
+	return toolText(fmt.Sprintf("Parent cleared for %s.", args.Identifier)), nil
+}
+
+// listChildren implements the list_children tool logic.
+// It returns the children (sub-issues) of a work item as a YAML list.
+func listChildren(ctx context.Context, args ListChildrenArgs, client planeClient) (*mcp.CallToolResult, error) {
+	proj, seq, err := parseIdentifier(args.Identifier)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	parentItem, err := client.GetWorkItemByIdentifier(ctx, proj, seq)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
+	}
+
+	// Build a project ID -> identifier map from all projects
+	projects, err := client.ListProjects(ctx)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to list projects: %v", err)), nil
+	}
+	projectIDToIdentifier := make(map[string]string)
+	for _, p := range projects {
+		projectIDToIdentifier[p.ID] = p.Identifier
+	}
+
+	params := map[string]string{"parent": parentItem.ID}
+	children, err := client.ListWorkItems(ctx, parentItem.Project.ID, params)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to list children: %v", err)), nil
+	}
+
+	if len(children) == 0 {
+		return toolText("[]"), nil
+	}
+
+	// Build YAML list of {identifier, name} for each child
+	type childOut struct {
+		Identifier string `yaml:"identifier"`
+		Name       string `yaml:"name"`
+	}
+
+	out := make([]childOut, len(children))
+	for i, c := range children {
+		identifier := projectIDToIdentifier[c.Project.ID]
+		if identifier == "" {
+			identifier = c.Project.ID
+		}
+		out[i] = childOut{
+			Identifier: fmt.Sprintf("%s-%d", identifier, c.SequenceID),
+			Name:       c.Name,
+		}
+	}
+
+	yamlBytes, err := yaml.Marshal(out)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to marshal children: %v", err)), nil
+	}
+
+	return toolText(string(yamlBytes)), nil
 }
 
 // createTask implements the create_task tool logic.
@@ -1805,6 +1930,39 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args ListRelationsArgs) (*mcp.CallToolResult, any, error) {
 			result, err := listRelations(ctx, args, client)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("set_parent", plannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "set_parent",
+			Description: "Set the parent of a work item by their project-prefixed identifiers (e.g. PROJ-123). The first identifier is the child, the second is the parent.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, IdempotentHint: true},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args SetParentArgs) (*mcp.CallToolResult, any, error) {
+			result, err := setParent(ctx, args, client)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("clear_parent", plannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "clear_parent",
+			Description: "Remove the parent reference from a work item by its project-prefixed identifier (e.g. PROJ-123).",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, IdempotentHint: true},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args ClearParentArgs) (*mcp.CallToolResult, any, error) {
+			result, err := clearParent(ctx, args, client)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("list_children", plannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "list_children",
+			Description: "List all child work items (sub-issues) for a work item by its project-prefixed identifier (e.g. PROJ-123). Returns YAML list with identifier and name for each child.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args ListChildrenArgs) (*mcp.CallToolResult, any, error) {
+			result, err := listChildren(ctx, args, client)
 			return result, nil, err
 		})
 	}
