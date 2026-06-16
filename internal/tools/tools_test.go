@@ -3948,3 +3948,659 @@ func TestListStates_ClientError(t *testing.T) {
 		t.Error("expected IsError=true when client.ListStates fails")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// list_work_items tests
+// ---------------------------------------------------------------------------
+
+// TestListWorkItems_Success — basic listing with project only.
+func TestListWorkItems_Success(t *testing.T) {
+	ctx := context.Background()
+	items := []plane.WorkItem{
+		{ID: "wi-1", Name: "Task One", SequenceID: 1},
+		{ID: "wi-2", Name: "Task Two", SequenceID: 2},
+	}
+	client := &mockClient{
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			if projectID != "proj-uuid" {
+				t.Errorf("expected projectID=proj-uuid, got %q", projectID)
+			}
+			return items, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "My Project", Identifier: "MP"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
+			if detail != "summary_with_labels" {
+				t.Errorf("expected detail='summary_with_labels', got %q", detail)
+			}
+			return "- name: Task One\n- name: Task Two\n", nil
+		},
+	}
+	args := ListWorkItemsArgs{Project: "My Project"}
+
+	result, err := listWorkItems(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got: %+v", result.Content)
+	}
+}
+
+// TestListWorkItems_NoItems — empty result returns a friendly message.
+func TestListWorkItems_NoItems(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			return nil, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "Empty", Identifier: "EMP"}, nil
+		},
+	}
+	formatter := &mockFormatter{}
+	args := ListWorkItemsArgs{Project: "Empty"}
+
+	result, err := listWorkItems(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Error("expected IsError=false for empty result")
+	}
+	tc := result.Content[0].(*mcp.TextContent)
+	if tc.Text != "[]" {
+		t.Errorf("expected '[]', got: %q", tc.Text)
+	}
+}
+
+// TestListWorkItems_ProjectResolveError — project not found returns error.
+func TestListWorkItems_ProjectResolveError(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return nil, errors.New("project not found")
+		},
+	}
+	formatter := &mockFormatter{}
+	args := ListWorkItemsArgs{Project: "Unknown"}
+
+	result, err := listWorkItems(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when project resolution fails")
+	}
+}
+
+// TestListWorkItems_ListError — client.ListWorkItems error is surfaced.
+func TestListWorkItems_ListError(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			return nil, errors.New("api down")
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid"}, nil
+		},
+	}
+	formatter := &mockFormatter{}
+	args := ListWorkItemsArgs{Project: "My Project"}
+
+	result, err := listWorkItems(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when client.ListWorkItems fails")
+	}
+}
+
+// TestListWorkItems_StateGroupFilter — passes state_group to the API.
+func TestListWorkItems_StateGroupFilter(t *testing.T) {
+	ctx := context.Background()
+	items := []plane.WorkItem{{ID: "wi-1", Name: "In Progress", SequenceID: 1}}
+	client := &mockClient{
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			if params["state_group"] != "started" {
+				t.Errorf("expected state_group=started, got %q", params["state_group"])
+			}
+			return items, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "Alpha", Identifier: "ALP"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
+			return "- name: In Progress\n", nil
+		},
+	}
+	args := ListWorkItemsArgs{Project: "Alpha", StateGroup: strPtr("started")}
+
+	result, err := listWorkItems(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got: %+v", result.Content)
+	}
+}
+
+// TestListWorkItems_PriorityFilter — passes priority to the API.
+func TestListWorkItems_PriorityFilter(t *testing.T) {
+	ctx := context.Background()
+	items := []plane.WorkItem{{ID: "wi-1", Name: "Urgent Task", SequenceID: 1}}
+	client := &mockClient{
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			if params["priority"] != "urgent" {
+				t.Errorf("expected priority=urgent, got %q", params["priority"])
+			}
+			return items, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "Alpha", Identifier: "ALP"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
+			return "- name: Urgent Task\n", nil
+		},
+	}
+	args := ListWorkItemsArgs{Project: "Alpha", Priority: strPtr("urgent")}
+
+	result, err := listWorkItems(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got: %+v", result.Content)
+	}
+}
+
+// TestListWorkItems_TypeFilter — passes type to the API.
+func TestListWorkItems_TypeFilter(t *testing.T) {
+	ctx := context.Background()
+	items := []plane.WorkItem{{ID: "wi-1", Name: "Bug", SequenceID: 1}}
+	client := &mockClient{
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			if params["type"] != "bug" {
+				t.Errorf("expected type=bug, got %q", params["type"])
+			}
+			return items, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
+			return "- name: Bug\n", nil
+		},
+	}
+	args := ListWorkItemsArgs{Project: "Alpha", Type: strPtr("bug")}
+
+	result, err := listWorkItems(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got: %+v", result.Content)
+	}
+}
+
+// TestListWorkItems_AssigneesFilter — resolves assignee names to UUIDs.
+func TestListWorkItems_AssigneesFilter(t *testing.T) {
+	ctx := context.Background()
+	items := []plane.WorkItem{{ID: "wi-1", Name: "Assigned Task", SequenceID: 1}}
+	client := &mockClient{
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			if params["assignees"] != "member-uuid-1,member-uuid-2" {
+				t.Errorf("expected assignees=member-uuid-1,member-uuid-2, got %q", params["assignees"])
+			}
+			return items, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid"}, nil
+		},
+		resolveMemberFn: func(ctx context.Context, input string) (*plane.Member, error) {
+			if input == "Alice" {
+				return &plane.Member{ID: "member-uuid-1", DisplayName: "Alice"}, nil
+			}
+			if input == "Bob" {
+				return &plane.Member{ID: "member-uuid-2", DisplayName: "Bob"}, nil
+			}
+			return nil, errors.New("unknown member")
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
+			return "- name: Assigned Task\n", nil
+		},
+	}
+	args := ListWorkItemsArgs{Project: "Alpha", Assignees: FlexibleStringSlice{"Alice", "Bob"}}
+
+	result, err := listWorkItems(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got: %+v", result.Content)
+	}
+}
+
+// TestListWorkItems_AssigneesResolveError — unresolvable assignee returns error.
+func TestListWorkItems_AssigneesResolveError(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid"}, nil
+		},
+		resolveMemberFn: func(ctx context.Context, input string) (*plane.Member, error) {
+			return nil, errors.New("member not found")
+		},
+	}
+	formatter := &mockFormatter{}
+	args := ListWorkItemsArgs{Project: "Alpha", Assignees: FlexibleStringSlice{"Unknown"}}
+
+	result, err := listWorkItems(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when assignee resolution fails")
+	}
+}
+
+// TestListWorkItems_LabelsFilter — resolves label names to UUIDs.
+func TestListWorkItems_LabelsFilter(t *testing.T) {
+	ctx := context.Background()
+	items := []plane.WorkItem{{ID: "wi-1", Name: "Labelled Task", SequenceID: 1}}
+	client := &mockClient{
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			if params["labels"] != "label-uuid-bug,label-uuid-ui" {
+				t.Errorf("expected labels=label-uuid-bug,label-uuid-ui, got %q", params["labels"])
+			}
+			return items, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid"}, nil
+		},
+		resolveLabelFn: func(ctx context.Context, projectID string, input string) (*plane.Label, error) {
+			if input == "bug" {
+				return &plane.Label{ID: "label-uuid-bug", Name: "bug"}, nil
+			}
+			if input == "ui" {
+				return &plane.Label{ID: "label-uuid-ui", Name: "ui"}, nil
+			}
+			return nil, errors.New("unknown label")
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
+			return "- name: Labelled Task\n", nil
+		},
+	}
+	args := ListWorkItemsArgs{Project: "Alpha", Labels: FlexibleStringSlice{"bug", "ui"}}
+
+	result, err := listWorkItems(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got: %+v", result.Content)
+	}
+}
+
+// TestListWorkItems_LabelsResolveError — unresolvable label returns error.
+func TestListWorkItems_LabelsResolveError(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid"}, nil
+		},
+		resolveLabelFn: func(ctx context.Context, projectID string, input string) (*plane.Label, error) {
+			return nil, errors.New("label not found")
+		},
+	}
+	formatter := &mockFormatter{}
+	args := ListWorkItemsArgs{Project: "Alpha", Labels: FlexibleStringSlice{"nonexistent"}}
+
+	result, err := listWorkItems(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when label resolution fails")
+	}
+}
+
+// TestListWorkItems_AllFilters — combines all filters.
+func TestListWorkItems_AllFilters(t *testing.T) {
+	ctx := context.Background()
+	items := []plane.WorkItem{{ID: "wi-1", Name: "Filtered Task", SequenceID: 1}}
+	client := &mockClient{
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			if params["state_group"] != "started" {
+				t.Errorf("expected state_group=started, got %q", params["state_group"])
+			}
+			if params["priority"] != "high" {
+				t.Errorf("expected priority=high, got %q", params["priority"])
+			}
+			if params["type"] != "feature" {
+				t.Errorf("expected type=feature, got %q", params["type"])
+			}
+			if params["assignees"] != "member-uuid" {
+				t.Errorf("expected assignees=member-uuid, got %q", params["assignees"])
+			}
+			if params["labels"] != "label-uuid" {
+				t.Errorf("expected labels=label-uuid, got %q", params["labels"])
+			}
+			return items, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid"}, nil
+		},
+		resolveMemberFn: func(ctx context.Context, input string) (*plane.Member, error) {
+			return &plane.Member{ID: "member-uuid", DisplayName: "Dev"}, nil
+		},
+		resolveLabelFn: func(ctx context.Context, projectID string, input string) (*plane.Label, error) {
+			return &plane.Label{ID: "label-uuid", Name: "frontend"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
+			return "- name: Filtered Task\n", nil
+		},
+	}
+	args := ListWorkItemsArgs{
+		Project:    "Alpha",
+		StateGroup: strPtr("started"),
+		Priority:   strPtr("high"),
+		Type:       strPtr("feature"),
+		Assignees:  FlexibleStringSlice{"Dev"},
+		Labels:     FlexibleStringSlice{"frontend"},
+	}
+
+	result, err := listWorkItems(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got: %+v", result.Content)
+	}
+}
+
+// TestListWorkItems_FormatterError — formatter error is surfaced.
+func TestListWorkItems_FormatterError(t *testing.T) {
+	ctx := context.Background()
+	items := []plane.WorkItem{{ID: "wi-1", Name: "Task", SequenceID: 1}}
+	client := &mockClient{
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			return items, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
+			return "", errors.New("format error")
+		},
+	}
+	args := ListWorkItemsArgs{Project: "Alpha"}
+
+	result, err := listWorkItems(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when formatter fails")
+	}
+}
+
+// TestListWorkItems_EmptyStateGroup — nil or empty state_group is not passed.
+func TestListWorkItems_EmptyStateGroup(t *testing.T) {
+	ctx := context.Background()
+	items := []plane.WorkItem{{ID: "wi-1", Name: "Task", SequenceID: 1}}
+	client := &mockClient{
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			if _, ok := params["state_group"]; ok {
+				t.Error("state_group param should not be set when empty")
+			}
+			return items, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
+			return "- name: Task\n", nil
+		},
+	}
+	args := ListWorkItemsArgs{Project: "Alpha", StateGroup: strPtr("")}
+
+	result, err := listWorkItems(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got: %+v", result.Content)
+	}
+}
+
+// TestListWorkItems_StateFilter — resolves state name to UUID and passes state param.
+func TestListWorkItems_StateFilter(t *testing.T) {
+	ctx := context.Background()
+	items := []plane.WorkItem{{ID: "wi-1", Name: "Stateful Task", SequenceID: 1}}
+	client := &mockClient{
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			if params["state"] != "state-uuid-1" {
+				t.Errorf("expected state=state-uuid-1, got %q", params["state"])
+			}
+			return items, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "Alpha", Identifier: "ALP"}, nil
+		},
+		resolveStateFn: func(ctx context.Context, projectID string, input string) (*plane.State, error) {
+			if projectID != "proj-uuid" || input != "In Progress" {
+				t.Errorf("ResolveState called with projectID=%q input=%q", projectID, input)
+			}
+			return &plane.State{ID: "state-uuid-1", Name: "In Progress"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
+			return "- name: Stateful Task\n", nil
+		},
+	}
+	args := ListWorkItemsArgs{Project: "Alpha", State: strPtr("In Progress")}
+
+	result, err := listWorkItems(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got: %+v", result.Content)
+	}
+}
+
+// TestListWorkItems_ModuleFilter — resolves module name to UUID and passes module param.
+func TestListWorkItems_ModuleFilter(t *testing.T) {
+	ctx := context.Background()
+	items := []plane.WorkItem{{ID: "wi-1", Name: "Modular Task", SequenceID: 1}}
+	client := &mockClient{
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			if params["module"] != "mod-uuid-1" {
+				t.Errorf("expected module=mod-uuid-1, got %q", params["module"])
+			}
+			return items, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "Alpha", Identifier: "ALP"}, nil
+		},
+		resolveModuleFn: func(ctx context.Context, projectID string, input string) (*plane.Module, error) {
+			if projectID != "proj-uuid" || input != "Sprint One" {
+				t.Errorf("ResolveModule called with projectID=%q input=%q", projectID, input)
+			}
+			return &plane.Module{ID: "mod-uuid-1", Name: "Sprint One"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
+			return "- name: Modular Task\n", nil
+		},
+	}
+	args := ListWorkItemsArgs{Project: "Alpha", Module: strPtr("Sprint One")}
+
+	result, err := listWorkItems(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got: %+v", result.Content)
+	}
+}
+
+// TestListWorkItems_LimitFilter — passes limit param as a string.
+func TestListWorkItems_LimitFilter(t *testing.T) {
+	ctx := context.Background()
+	items := []plane.WorkItem{{ID: "wi-1", Name: "Limited Task", SequenceID: 1}}
+	client := &mockClient{
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			if params["limit"] != "5" {
+				t.Errorf("expected limit=5, got %q", params["limit"])
+			}
+			return items, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
+			return "- name: Limited Task\n", nil
+		},
+	}
+	limit := 5
+	args := ListWorkItemsArgs{Project: "Alpha", Limit: &limit}
+
+	result, err := listWorkItems(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got: %+v", result.Content)
+	}
+}
+
+// TestListWorkItems_EmptyResult — no items returns "[]".
+func TestListWorkItems_EmptyResult(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			return nil, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid"}, nil
+		},
+	}
+	formatter := &mockFormatter{}
+	args := ListWorkItemsArgs{Project: "Empty"}
+
+	result, err := listWorkItems(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Error("expected IsError=false for empty result")
+	}
+	tc := result.Content[0].(*mcp.TextContent)
+	if tc.Text != "[]" {
+		t.Errorf("expected '[]', got: %q", tc.Text)
+	}
+}
+
+// TestListWorkItems_LabelsInOutput — verifies that summary_with_labels includes labels in YAML.
+func TestListWorkItems_LabelsInOutput(t *testing.T) {
+	ctx := context.Background()
+	items := []plane.WorkItem{
+		{
+			ID: "wi-1", Name: "Labelled Task", SequenceID: 1,
+			Labels: []plane.Expandable[plane.Label]{
+				{Val: &plane.Label{ID: "label-1", Name: "bug"}},
+				{Val: &plane.Label{ID: "label-2", Name: "ui"}},
+			},
+		},
+	}
+	client := &mockClient{
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			return items, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "Alpha", Identifier: "ALP"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
+			if detail != "summary_with_labels" {
+				t.Errorf("expected detail='summary_with_labels', got %q", detail)
+			}
+			return "- identifier: ALP-1\n  name: Labelled Task\n  labels:\n    - bug\n    - ui\n", nil
+		},
+	}
+	args := ListWorkItemsArgs{Project: "Alpha"}
+
+	result, err := listWorkItems(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected IsError=false, got: %+v", result.Content)
+	}
+	tc := result.Content[0].(*mcp.TextContent)
+	if !strings.Contains(tc.Text, "labels:") {
+		t.Errorf("expected labels in output, got: %q", tc.Text)
+	}
+}

@@ -458,6 +458,19 @@ type CreateTaskArgs struct {
 	Parent      string              `json:"parent,omitempty"`
 }
 
+// ListWorkItemsArgs are the arguments for the list_work_items tool.
+type ListWorkItemsArgs struct {
+	Project    string              `json:"project"`
+	StateGroup *string             `json:"state_group,omitempty"`
+	Priority   *string             `json:"priority,omitempty"`
+	Type       *string             `json:"type,omitempty"`
+	Assignees  FlexibleStringSlice `json:"assignees,omitempty"`
+	Labels     FlexibleStringSlice `json:"labels,omitempty"`
+	State      *string             `json:"state,omitempty"`
+	Module     *string             `json:"module,omitempty"`
+	Limit      *int                `json:"limit,omitempty"`
+}
+
 // ---------------------------------------------------------------------------
 // Internal tool handler implementations (accept interfaces for testability)
 // ---------------------------------------------------------------------------
@@ -991,6 +1004,90 @@ func assignWorkItem(ctx context.Context, args AssignWorkItemArgs, client planeCl
 	}
 }
 
+// listWorkItems implements the list_work_items tool logic.
+func listWorkItems(ctx context.Context, args ListWorkItemsArgs, client planeClient, resolver planeResolver, formatter planeFormatter) (*mcp.CallToolResult, error) {
+	proj, err := resolver.ResolveProject(ctx, args.Project)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to resolve project %q: %v", args.Project, err)), nil
+	}
+
+	params := map[string]string{}
+	if args.StateGroup != nil && *args.StateGroup != "" {
+		params["state_group"] = *args.StateGroup
+	}
+	if args.Priority != nil && *args.Priority != "" {
+		params["priority"] = *args.Priority
+	}
+	if args.Type != nil && *args.Type != "" {
+		params["type"] = *args.Type
+	}
+
+	// Resolve state name to UUID.
+	if args.State != nil && *args.State != "" {
+		state, err := resolver.ResolveState(ctx, proj.ID, *args.State)
+		if err != nil {
+			return toolError(fmt.Sprintf("failed to resolve state %q: %v", *args.State, err)), nil
+		}
+		params["state"] = state.ID
+	}
+
+	// Resolve module name to UUID.
+	if args.Module != nil && *args.Module != "" {
+		module, err := resolver.ResolveModule(ctx, proj.ID, *args.Module)
+		if err != nil {
+			return toolError(fmt.Sprintf("failed to resolve module %q: %v", *args.Module, err)), nil
+		}
+		params["module"] = module.ID
+	}
+
+	// Resolve assignee names to UUIDs.
+	if len(args.Assignees) > 0 {
+		var ids []string
+		for _, a := range args.Assignees {
+			member, err := resolver.ResolveMember(ctx, a)
+			if err != nil {
+				return toolError(fmt.Sprintf("failed to resolve assignee %q: %v", a, err)), nil
+			}
+			ids = append(ids, member.ID)
+		}
+		params["assignees"] = strings.Join(ids, ",")
+	}
+
+	// Resolve label names to UUIDs.
+	if len(args.Labels) > 0 {
+		var ids []string
+		for _, l := range args.Labels {
+			label, err := resolver.ResolveLabel(ctx, proj.ID, l)
+			if err != nil {
+				return toolError(fmt.Sprintf("failed to resolve label %q: %v", l, err)), nil
+			}
+			ids = append(ids, label.ID)
+		}
+		params["labels"] = strings.Join(ids, ",")
+	}
+
+	// Apply limit.
+	if args.Limit != nil && *args.Limit > 0 {
+		params["limit"] = strconv.Itoa(*args.Limit)
+	}
+
+	items, err := client.ListWorkItems(ctx, proj.ID, params)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to list work items: %v", err)), nil
+	}
+
+	if len(items) == 0 {
+		return toolText("[]"), nil
+	}
+
+	yaml, err := formatter.FormatWorkItemsYAML(ctx, items, "summary_with_labels")
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to format work items: %v", err)), nil
+	}
+
+	return toolText(yaml), nil
+}
+
 // createTaskInputSchema builds the JSON Schema for the create_task tool.
 // It overrides the FlexibleStringSlice type to accept "string" in addition
 // to "null" and "array", so that MCP clients which serialise array
@@ -1033,6 +1130,25 @@ func assignWorkItemInputSchema() *jsonschema.Schema {
 		if name == "mode" {
 			prop.Enum = []any{"set", "add", "remove"}
 		}
+	}
+	return schema
+}
+
+// listWorkItemsInputSchema builds the JSON Schema for the list_work_items tool.
+// It overrides the FlexibleStringSlice type to accept "string" in addition
+// to "null" and "array", so that MCP clients which serialise array
+// arguments as JSON strings (e.g. "[\"uuid\"]") pass schema validation.
+func listWorkItemsInputSchema() *jsonschema.Schema {
+	schema, err := jsonschema.For[ListWorkItemsArgs](&jsonschema.ForOptions{
+		TypeSchemas: map[reflect.Type]*jsonschema.Schema{
+			reflect.TypeFor[FlexibleStringSlice](): {
+				Types: []string{"null", "array", "string"},
+				Items: &jsonschema.Schema{Type: "string"},
+			},
+		},
+	})
+	if err != nil {
+		panic(fmt.Sprintf("list_work_items: failed to build input schema: %v", err))
 	}
 	return schema
 }
@@ -1155,6 +1271,17 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 			InputSchema: createTaskInputSchema(),
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args CreateTaskArgs) (*mcp.CallToolResult, any, error) {
 			result, err := createTask(ctx, args, client, resolver, formatter)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("list_work_items", plannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "list_work_items",
+			Description: "List work items in a project with optional filters for state group, state, priority, type, module, assignees, labels, and limit. Assignees, labels, states, and modules may be specified by name or ID and are resolved automatically.",
+			InputSchema: listWorkItemsInputSchema(),
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args ListWorkItemsArgs) (*mcp.CallToolResult, any, error) {
+			result, err := listWorkItems(ctx, args, client, resolver, formatter)
 			return result, nil, err
 		})
 	}
