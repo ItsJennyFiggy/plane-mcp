@@ -46,6 +46,7 @@ type planeClient interface {
 	ListWorkItemRelations(ctx context.Context, projectID, workItemID string) (*plane.WorkItemRelations, error)
 	CreateWorkItemRelation(ctx context.Context, projectID, workItemID, relationType string, issues []string) error
 	RemoveWorkItemRelation(ctx context.Context, projectID, workItemID, relatedIssue string) error
+	DeleteWorkItem(ctx context.Context, projectID, workItemID string) error
 }
 
 // planeResolver abstracts all name-resolution calls made by the tool handlers.
@@ -540,6 +541,13 @@ type ClearParentArgs struct {
 // ListChildrenArgs are the arguments for the list_children tool.
 type ListChildrenArgs struct {
 	Identifier string `json:"identifier"`
+}
+
+// MoveWorkItemArgs are the arguments for the move_work_item tool.
+type MoveWorkItemArgs struct {
+	Identifier     string `json:"identifier"`
+	TargetProject  string `json:"target_project"`
+	DeleteOriginal bool   `json:"delete_original"`
 }
 
 // commentOut is the YAML-serializable representation of a single comment,
@@ -1070,6 +1078,215 @@ func listChildren(ctx context.Context, args ListChildrenArgs, client planeClient
 	}
 
 	return toolText(string(yamlBytes)), nil
+}
+
+// moveWorkItem implements the move_work_item tool logic.
+func moveWorkItem(ctx context.Context, args MoveWorkItemArgs, client planeClient, resolver planeResolver, formatter planeFormatter) (*mcp.CallToolResult, error) {
+	// a. Parse the source identifier.
+	srcProj, srcSeq, err := parseIdentifier(args.Identifier)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+
+	// b. Resolve the target project ID.
+	targetProj, err := resolver.ResolveProject(ctx, args.TargetProject)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to resolve target project %q: %v", args.TargetProject, err)), nil
+	}
+	targetProjectID := targetProj.ID
+
+	// c. Fetch the original work item.
+	srcItem, err := client.GetWorkItemByIdentifier(ctx, srcProj, srcSeq)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to get source work item %s: %v", args.Identifier, err)), nil
+	}
+	srcProjectID := srcItem.Project.ID
+
+	// d. Resolve labels from the source item in the target project by name.
+	var labelIDs []string
+	var warnings []string
+	for _, l := range srcItem.Labels {
+		var labelName string
+		if l.Val != nil {
+			labelName = l.Val.Name
+		} else if l.ID != "" {
+			labelName = l.ID // fallback: try ID as name
+		}
+		if labelName == "" {
+			continue
+		}
+		label, err := resolver.ResolveLabel(ctx, targetProjectID, labelName)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("label %q not found in target project, skipping", labelName))
+			continue
+		}
+		labelIDs = append(labelIDs, label.ID)
+	}
+
+	// e. Retrieve target project states and match the source state.
+	targetStates, err := client.ListStates(ctx, targetProjectID)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to list target project states: %v", err)), nil
+	}
+	srcStates, err := client.ListStates(ctx, srcProjectID)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to list source project states: %v", err)), nil
+	}
+
+	// Determine the source state's name and group.
+	var srcStateName, srcStateGroup string
+	if srcItem.State.Val != nil {
+		srcStateName = srcItem.State.Val.Name
+		srcStateGroup = srcItem.State.Val.Group
+	} else {
+		// Look up by ID in source states.
+		for _, s := range srcStates {
+			if s.ID == srcItem.State.ID {
+				srcStateName = s.Name
+				srcStateGroup = s.Group
+				break
+			}
+		}
+	}
+
+	// Match target state: exact name → group → default.
+	var targetStateID string
+	var targetStateName string
+
+	// 1. Exact match by name (case-insensitive).
+	for _, s := range targetStates {
+		if strings.EqualFold(s.Name, srcStateName) {
+			targetStateID = s.ID
+			targetStateName = s.Name
+			break
+		}
+	}
+
+	// 2. Match by state group (case-insensitive).
+	if targetStateID == "" && srcStateGroup != "" {
+		for _, s := range targetStates {
+			if strings.EqualFold(s.Group, srcStateGroup) {
+				targetStateID = s.ID
+				targetStateName = s.Name
+				break
+			}
+		}
+	}
+
+	// 3. Fallback to default (first backlog/unstarted, or first available).
+	if targetStateID == "" {
+		for _, group := range []string{"backlog", "unstarted"} {
+			for _, s := range targetStates {
+				if strings.EqualFold(s.Group, group) {
+					targetStateID = s.ID
+					targetStateName = s.Name
+					break
+				}
+			}
+			if targetStateID != "" {
+				break
+			}
+		}
+	}
+	if targetStateID == "" && len(targetStates) > 0 {
+		targetStateID = targetStates[0].ID
+		targetStateName = targetStates[0].Name
+	}
+
+	if targetStateID == "" {
+		return toolError("target project has no states available"), nil
+	}
+
+	if targetStateName != srcStateName {
+		warnings = append(warnings, fmt.Sprintf("target state %q differs from original state %q", targetStateName, srcStateName))
+	}
+
+	// f. Convert description HTML → Markdown → HTML for the target.
+	var descHTML string
+	if srcItem.DescriptionHTML != "" {
+		md := plane.ConvertHTMLToMarkdown(srcItem.DescriptionHTML)
+		descHTML = convertDescriptionToHTML(md)
+	}
+
+	// g. Create the target work item.
+	body := map[string]any{
+		"name":  srcItem.Name,
+		"state": targetStateID,
+	}
+	if descHTML != "" {
+		body["description_html"] = descHTML
+	}
+	if srcItem.Priority != "" {
+		body["priority"] = srcItem.Priority
+	}
+	if len(labelIDs) > 0 {
+		body["labels"] = labelIDs
+	}
+	if len(srcItem.Assignees) > 0 {
+		body["assignees"] = extractAssigneeIDs(srcItem.Assignees)
+	}
+	if srcItem.Type != nil && *srcItem.Type != "" {
+		body["type"] = *srcItem.Type
+	}
+
+	created, err := client.CreateWorkItem(ctx, targetProjectID, body)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to create target work item: %v", err)), nil
+	}
+
+	newIdentifier := fmt.Sprintf("%s-%d", targetProj.Identifier, created.SequenceID)
+
+	// h. Handle the original work item.
+	if args.DeleteOriginal {
+		if err := client.DeleteWorkItem(ctx, srcProjectID, srcItem.ID); err != nil {
+			warnings = append(warnings, fmt.Sprintf("failed to delete original work item: %v", err))
+		}
+	} else {
+		// Rename original item.
+		newName := fmt.Sprintf("MOVED TO %s - %s", newIdentifier, srcItem.Name)
+		updateBody := map[string]any{
+			"name": newName,
+		}
+
+		// Find cancelled state in source project.
+		var cancelledStateID string
+		for _, s := range srcStates {
+			if strings.EqualFold(s.Group, "cancelled") {
+				cancelledStateID = s.ID
+				break
+			}
+		}
+		if cancelledStateID != "" {
+			updateBody["state"] = cancelledStateID
+		} else {
+			log.Printf("warning: no cancelled state found in source project, leaving state unchanged")
+		}
+
+		if _, err := client.UpdateWorkItem(ctx, srcProjectID, srcItem.ID, updateBody); err != nil {
+			warnings = append(warnings, fmt.Sprintf("failed to update original work item: %v", err))
+		}
+
+		// Create a 'duplicate' relation on the original pointing to the new item.
+		if err := client.CreateWorkItemRelation(ctx, srcProjectID, srcItem.ID, "duplicate", []string{created.ID}); err != nil {
+			warnings = append(warnings, fmt.Sprintf("failed to create duplicate relation on original: %v", err))
+		}
+	}
+
+	// Format the created work item for output.
+	yamlOut, err := formatter.FormatWorkItemYAML(ctx, created, "full")
+	if err != nil {
+		return toolError(fmt.Sprintf("work item %s created but failed to format: %v", newIdentifier, err)), nil
+	}
+
+	resultText := fmt.Sprintf("Work item %s moved to %s in project %s.\n\n%s", args.Identifier, newIdentifier, targetProj.Name, yamlOut)
+	if len(warnings) > 0 {
+		resultText += "\nWarnings:\n"
+		for _, w := range warnings {
+			resultText += fmt.Sprintf("- %s\n", w)
+		}
+	}
+
+	return toolText(resultText), nil
 }
 
 // createTask implements the create_task tool logic.
@@ -1963,6 +2180,18 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args ListChildrenArgs) (*mcp.CallToolResult, any, error) {
 			result, err := listChildren(ctx, args, client)
+			return result, nil, err
+		})
+	}
+
+	truePtr := true
+	if shouldRegister("move_work_item", plannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "move_work_item",
+			Description: "Move a work item to another project by its project-prefixed identifier (e.g. PROJ-123). Creates a copy in the target project with the same name, description, priority, assignees, labels, and state (matched by name or state group). Optionally deletes the original; otherwise renames it with a MOVED TO prefix, transitions it to a cancelled state, and adds a duplicate relation pointing to the new item.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &truePtr},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args MoveWorkItemArgs) (*mcp.CallToolResult, any, error) {
+			result, err := moveWorkItem(ctx, args, client, resolver, formatter)
 			return result, nil, err
 		})
 	}

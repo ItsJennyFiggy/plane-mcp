@@ -558,3 +558,10 @@ func (c *Client) GetLastComment(ctx context.Context, projectID, workItemID strin
 
 	return &results[0], nil
 }
+
+// DeleteWorkItem deletes a work item.
+// Path: DELETE /api/v1/workspaces/{slug}/projects/{projectID}/work-items/{workItemID}/
+func (c *Client) DeleteWorkItem(ctx context.Context, projectID, workItemID string) error {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/work-items/%s/", c.WorkspaceSlug, projectID, workItemID)
+	return c.request(ctx, "DELETE", path, nil, nil, nil)
+}
