@@ -148,6 +148,22 @@ type WorkItem struct {
 	Labels              []Expandable[Label]  `json:"labels"`
 }
 
+// CommentActorDetail represents the actor (user) that authored a comment.
+type CommentActorDetail struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	FirstName   string `json:"first_name"`
+	LastName    string `json:"last_name"`
+}
+
+// Comment represents a comment on a work item.
+type Comment struct {
+	ID          string             `json:"id"`
+	CreatedAt   string             `json:"created_at"`
+	CommentHTML string             `json:"comment_html"`
+	ActorDetail CommentActorDetail `json:"actor_detail"`
+}
+
 // Client to interact with Plane REST API
 type Client struct {
 	BaseURL              string
@@ -436,4 +452,11 @@ func (c *Client) AddWorkItemsToModule(ctx context.Context, projectID, moduleID s
 		"issues": workItemIDs,
 	}
 	return c.request(ctx, "POST", path, nil, body, nil)
+}
+
+// ListComments retrieves all comments for a work item.
+// Path: GET /api/v1/workspaces/{slug}/projects/{projectID}/work-items/{workItemID}/comments/
+func (c *Client) ListComments(ctx context.Context, projectID, workItemID string) ([]Comment, error) {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/work-items/%s/comments/", c.WorkspaceSlug, projectID, workItemID)
+	return listAllGeneric[Comment](ctx, c, path, nil)
 }
