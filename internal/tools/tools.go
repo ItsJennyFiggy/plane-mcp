@@ -494,6 +494,16 @@ type SearchWorkItemsArgs struct {
 	Limit   *int    `json:"limit,omitempty"`
 }
 
+// UpdateWorkItemArgs are the arguments for the update_work_item tool.
+// All fields except Identifier are pointers so that nil means "omit from PATCH".
+type UpdateWorkItemArgs struct {
+	Identifier  string  `json:"identifier"`
+	Name        *string `json:"name,omitempty"`
+	Description *string `json:"description,omitempty"`
+	Priority    *string `json:"priority,omitempty"`
+	State       *string `json:"state,omitempty"`
+}
+
 // commentOut is the YAML-serializable representation of a single comment,
 // shared by list_comments and get_last_comment. Field order is fixed to
 // author, created_at, body — matching the expected output shape.
@@ -1284,6 +1294,60 @@ func searchWorkItems(ctx context.Context, args SearchWorkItemsArgs, client plane
 	return toolText(yaml), nil
 }
 
+// updateWorkItem implements the update_work_item tool logic.
+// All optional fields use pointers: nil means "omit from PATCH", non-nil means "set to this value".
+func updateWorkItem(ctx context.Context, args UpdateWorkItemArgs, client planeClient, resolver planeResolver, formatter planeFormatter) (*mcp.CallToolResult, error) {
+	projIdentifier, seqID, err := parseIdentifier(args.Identifier)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+
+	item, err := client.GetWorkItemByIdentifier(ctx, projIdentifier, seqID)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
+	}
+
+	projectID := item.Project.ID
+	if item.Project.Val != nil {
+		projectID = item.Project.Val.ID
+	}
+
+	body := map[string]any{}
+
+	if args.Name != nil {
+		body["name"] = *args.Name
+	}
+	if args.Description != nil {
+		body["description_html"] = convertDescriptionToHTML(*args.Description)
+	}
+	if args.Priority != nil {
+		body["priority"] = *args.Priority
+	}
+	if args.State != nil {
+		state, err := resolver.ResolveState(ctx, projectID, *args.State)
+		if err != nil {
+			return toolError(fmt.Sprintf("failed to resolve state %q: %v", *args.State, err)), nil
+		}
+		body["state"] = state.ID
+	}
+
+	if len(body) == 0 {
+		return toolError("at least one of name, description, priority, or state is required"), nil
+	}
+
+	updated, err := client.UpdateWorkItem(ctx, projectID, item.ID, body)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to update work item: %v", err)), nil
+	}
+
+	yaml, err := formatter.FormatWorkItemYAML(ctx, updated, "full")
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to format updated work item: %v", err)), nil
+	}
+
+	return toolText(yaml), nil
+}
+
 // createTaskInputSchema builds the JSON Schema for the create_task tool.
 // It overrides the FlexibleStringSlice type to accept "string" in addition
 // to "null" and "array", so that MCP clients which serialise array
@@ -1435,6 +1499,17 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 			InputSchema: assignWorkItemInputSchema(),
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args AssignWorkItemArgs) (*mcp.CallToolResult, any, error) {
 			result, err := assignWorkItem(ctx, args, client, resolver)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("update_work_item", plannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "update_work_item",
+			Description: "Update a work item's editable fields (name, description, priority, state) by its project-prefixed identifier (e.g. PROJ-123). Only the fields you provide are changed; omit any field to leave it unchanged. State is resolved by name or ID. Description accepts Markdown and is converted to Plane-native rich text.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, IdempotentHint: true},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args UpdateWorkItemArgs) (*mcp.CallToolResult, any, error) {
+			result, err := updateWorkItem(ctx, args, client, resolver, formatter)
 			return result, nil, err
 		})
 	}
