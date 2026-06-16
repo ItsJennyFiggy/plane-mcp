@@ -494,6 +494,37 @@ type SearchWorkItemsArgs struct {
 	Limit   *int    `json:"limit,omitempty"`
 }
 
+// commentOut is the YAML-serializable representation of a single comment,
+// shared by list_comments and get_last_comment. Field order is fixed to
+// author, created_at, body — matching the expected output shape.
+type commentOut struct {
+	Author    string `yaml:"author"`
+	CreatedAt string `yaml:"created_at"`
+	Body      string `yaml:"body"`
+}
+
+// formatCommentAuthor returns the best available human-readable author label
+// for a comment, applying the priority: DisplayName → FirstName+LastName → "Unknown".
+func formatCommentAuthor(c plane.Comment) string {
+	author := c.ActorDetail.DisplayName
+	if author == "" {
+		author = strings.TrimSpace(c.ActorDetail.FirstName + " " + c.ActorDetail.LastName)
+	}
+	if author == "" {
+		author = "Unknown"
+	}
+	return author
+}
+
+// makeCommentOut converts a plane.Comment to the YAML-ready commentOut struct.
+func makeCommentOut(c plane.Comment) commentOut {
+	return commentOut{
+		Author:    formatCommentAuthor(c),
+		CreatedAt: c.CreatedAt,
+		Body:      plane.ConvertHTMLToMarkdown(c.CommentHTML),
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Internal tool handler implementations (accept interfaces for testability)
 // ---------------------------------------------------------------------------
@@ -595,12 +626,6 @@ func listComments(ctx context.Context, args ListCommentsArgs, client planeClient
 		return toolError(fmt.Sprintf("failed to list comments: %v", err)), nil
 	}
 
-	type commentOut struct {
-		Author    string `yaml:"author"`
-		CreatedAt string `yaml:"created_at"`
-		Body      string `yaml:"body"`
-	}
-
 	if len(comments) == 0 {
 		yamlBytes, _ := yaml.Marshal([]commentOut{})
 		return toolText(string(yamlBytes)), nil
@@ -619,19 +644,7 @@ func listComments(ctx context.Context, args ListCommentsArgs, client planeClient
 
 	out := make([]commentOut, len(comments))
 	for i, c := range comments {
-		author := c.ActorDetail.DisplayName
-		if author == "" {
-			author = strings.TrimSpace(c.ActorDetail.FirstName + " " + c.ActorDetail.LastName)
-		}
-		if author == "" {
-			author = "Unknown"
-		}
-
-		out[i] = commentOut{
-			Author:    author,
-			CreatedAt: c.CreatedAt,
-			Body:      plane.ConvertHTMLToMarkdown(c.CommentHTML),
-		}
+		out[i] = makeCommentOut(c)
 	}
 
 	yamlBytes, err := yaml.Marshal(out)
@@ -663,26 +676,9 @@ func getLastComment(ctx context.Context, args GetLastCommentArgs, client planeCl
 		return toolText("null"), nil
 	}
 
-	// Convert HTML comment body to Markdown
-	body := plane.ConvertHTMLToMarkdown(comment.CommentHTML)
-
-	// Format author name: fallback display name or first+last name
-	author := comment.ActorDetail.DisplayName
-	if author == "" {
-		author = strings.TrimSpace(comment.ActorDetail.FirstName + " " + comment.ActorDetail.LastName)
-	}
-	if author == "" {
-		author = "Unknown"
-	}
-
-	// Build a slim map containing author, created_at, and body
-	m := map[string]string{
-		"author":     author,
-		"created_at": comment.CreatedAt,
-		"body":       body,
-	}
-
-	d, err := yaml.Marshal(m)
+	// Serialize a single commentOut so the YAML field order (author, created_at,
+	// body) matches list_comments.
+	d, err := yaml.Marshal(makeCommentOut(*comment))
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to marshal comment to yaml: %v", err)), nil
 	}

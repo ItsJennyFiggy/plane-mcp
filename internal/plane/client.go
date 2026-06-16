@@ -464,6 +464,13 @@ func (c *Client) ListComments(ctx context.Context, projectID, workItemID string)
 // GetLastComment retrieves the single most recently created comment on a work item.
 // Path: GET /api/v1/workspaces/{slug}/projects/{projectID}/work-items/{workItemID}/comments/
 // Returns nil if no comments exist.
+//
+// The order_by=-created_at query parameter is a silent no-op due to a Plane API
+// server dispatch limitation: BaseAPIView.dispatch only copies URL-resolved kwargs
+// (slug, project_id, issue_id) into self.kwargs; query-string parameters live in
+// request.GET and are never merged. The server's get_queryset therefore always
+// falls back to the default "-created_at" ordering. The parameter is left in place
+// as belt-and-suspenders — correctness depends on that server default.
 func (c *Client) GetLastComment(ctx context.Context, projectID, workItemID string) (*Comment, error) {
 	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/work-items/%s/comments/", c.WorkspaceSlug, projectID, workItemID)
 	params := map[string]string{
