@@ -1114,9 +1114,18 @@ func searchWorkItems(ctx context.Context, args SearchWorkItemsArgs, client plane
 		params["project_id"] = proj.ID
 	}
 
-	if args.Limit != nil && *args.Limit > 0 {
-		params["limit"] = strconv.Itoa(*args.Limit)
+	// Default limit to 10; hard cap at 20.
+	limit := 10
+	if args.Limit != nil {
+		if *args.Limit <= 0 {
+			limit = 10
+		} else if *args.Limit > 20 {
+			limit = 20
+		} else {
+			limit = *args.Limit
+		}
 	}
+	params["limit"] = strconv.Itoa(limit)
 
 	results, err := client.SearchWorkItems(ctx, params)
 	if err != nil {
@@ -1129,11 +1138,21 @@ func searchWorkItems(ctx context.Context, args SearchWorkItemsArgs, client plane
 
 	var items []plane.WorkItem
 	for _, r := range results {
-		item, err := client.GetWorkItemByIdentifier(ctx, r.ProjectIdentifier, r.SequenceID)
+		seqID, err := strconv.Atoi(r.SequenceID)
 		if err != nil {
-			return toolError(fmt.Sprintf("failed to get work item %s-%d: %v", r.ProjectIdentifier, r.SequenceID, err)), nil
+			log.Printf("search_work_items: skipping result %s: failed to parse sequence_id %q: %v", r.ID, r.SequenceID, err)
+			continue
+		}
+		item, err := client.GetWorkItemByIdentifier(ctx, r.ProjectIdentifier, seqID)
+		if err != nil {
+			log.Printf("search_work_items: skipping %s-%s: %v", r.ProjectIdentifier, r.SequenceID, err)
+			continue
 		}
 		items = append(items, *item)
+	}
+
+	if len(items) == 0 {
+		return toolText("[]"), nil
 	}
 
 	yaml, err := formatter.FormatWorkItemsYAML(ctx, items, "summary")

@@ -118,7 +118,7 @@ type Member struct {
 type SearchWorkItemResult struct {
 	ID                string `json:"id"`
 	Name              string `json:"name"`
-	SequenceID        int    `json:"sequence_id"`
+	SequenceID        string `json:"sequence_id"`
 	ProjectIdentifier string `json:"project__identifier"`
 	ProjectID         string `json:"project_id"`
 	WorkspaceSlug     string `json:"workspace__slug"`
@@ -370,10 +370,16 @@ func (c *Client) ListWorkItems(ctx context.Context, projectID string, params map
 
 // SearchWorkItems searches work items across the workspace.
 // Path: GET /api/v1/workspaces/{slug}/work-items/search/
-// The caller-provided params are forwarded as query params (e.g. search, project_id, limit).
+// The caller-provided params are forwarded as query params (e.g. search, project_id).
 func (c *Client) SearchWorkItems(ctx context.Context, params map[string]string) ([]SearchWorkItemResult, error) {
 	path := fmt.Sprintf("/api/v1/workspaces/%s/work-items/search/", c.WorkspaceSlug)
-	return listAllGeneric[SearchWorkItemResult](ctx, c, path, params)
+	var resp struct {
+		Issues []SearchWorkItemResult `json:"issues"`
+	}
+	if err := c.request(ctx, "GET", path, params, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Issues, nil
 }
 
 // CreateWorkItem creates a new work item in a project.
