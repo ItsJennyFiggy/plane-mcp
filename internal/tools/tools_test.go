@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -485,6 +486,7 @@ type mockClient struct {
 	listProjectsFn            func(ctx context.Context) ([]plane.Project, error)
 	getWorkItemByIdentifierFn func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error)
 	listWorkItemsFn           func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error)
+	searchWorkItemsFn         func(ctx context.Context, params map[string]string) ([]plane.SearchWorkItemResult, error)
 	createWorkItemFn          func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error)
 	createWorkItemCommentFn   func(ctx context.Context, projectID, itemID, comment string) error
 	updateWorkItemFn          func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error)
@@ -502,6 +504,9 @@ func (m *mockClient) GetWorkItemByIdentifier(ctx context.Context, projectIdentif
 }
 func (m *mockClient) ListWorkItems(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
 	return m.listWorkItemsFn(ctx, projectID, params)
+}
+func (m *mockClient) SearchWorkItems(ctx context.Context, params map[string]string) ([]plane.SearchWorkItemResult, error) {
+	return m.searchWorkItemsFn(ctx, params)
 }
 func (m *mockClient) CreateWorkItem(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error) {
 	return m.createWorkItemFn(ctx, projectID, body)
@@ -4602,5 +4607,381 @@ func TestListWorkItems_LabelsInOutput(t *testing.T) {
 	tc := result.Content[0].(*mcp.TextContent)
 	if !strings.Contains(tc.Text, "labels:") {
 		t.Errorf("expected labels in output, got: %q", tc.Text)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// searchWorkItems handler tests
+// ---------------------------------------------------------------------------
+
+// TestSearchWorkItems_Success verifies search_work_items happy path.
+func TestSearchWorkItems_Success(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	searchResults := []plane.SearchWorkItemResult{
+		{ID: "wi-1", Name: "Fix login", SequenceID: "1", ProjectIdentifier: "PROJ", ProjectID: "proj-1", WorkspaceSlug: "ws"},
+		{ID: "wi-2", Name: "Login error", SequenceID: "2", ProjectIdentifier: "PROJ", ProjectID: "proj-1", WorkspaceSlug: "ws"},
+	}
+	workItems := []plane.WorkItem{
+		{ID: "wi-1", Name: "Fix login", SequenceID: 1},
+		{ID: "wi-2", Name: "Login error", SequenceID: 2},
+	}
+	client := &mockClient{
+		searchWorkItemsFn: func(ctx context.Context, params map[string]string) ([]plane.SearchWorkItemResult, error) {
+			if params["search"] != "login" {
+				t.Errorf("expected search=login, got %q", params["search"])
+			}
+			return searchResults, nil
+		},
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			for _, wi := range workItems {
+				if wi.SequenceID == seq {
+					return &wi, nil
+				}
+			}
+			return nil, errors.New("not found")
+		},
+	}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{
+		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
+			if detail != "summary" {
+				t.Errorf("expected detail='summary', got %q", detail)
+			}
+			return "name: Fix login\nname: Login error\n", nil
+		},
+	}
+	args := SearchWorkItemsArgs{Query: "login"}
+
+	// Act
+	result, err := searchWorkItems(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+}
+
+// TestSearchWorkItems_Empty verifies an empty result returns "[]".
+func TestSearchWorkItems_Empty(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	client := &mockClient{
+		searchWorkItemsFn: func(ctx context.Context, params map[string]string) ([]plane.SearchWorkItemResult, error) {
+			return nil, nil
+		},
+	}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{}
+	args := SearchWorkItemsArgs{Query: "nonexistent"}
+
+	// Act
+	result, err := searchWorkItems(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Fatal("expected IsError=false for empty results")
+	}
+	tc := result.Content[0].(*mcp.TextContent)
+	if tc.Text != "[]" {
+		t.Errorf("expected '[]', got %q", tc.Text)
+	}
+}
+
+// TestSearchWorkItems_ProjectFilter verifies project resolution and filter.
+func TestSearchWorkItems_ProjectFilter(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	searchResults := []plane.SearchWorkItemResult{
+		{ID: "wi-1", Name: "Task", SequenceID: "1", ProjectIdentifier: "ALPHA", ProjectID: "proj-alpha", WorkspaceSlug: "ws"},
+	}
+	var capturedParams map[string]string
+	client := &mockClient{
+		searchWorkItemsFn: func(ctx context.Context, params map[string]string) ([]plane.SearchWorkItemResult, error) {
+			capturedParams = params
+			return searchResults, nil
+		},
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{ID: "wi-1", Name: "Task", SequenceID: 1}, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			if input != "Alpha" {
+				t.Errorf("expected project input='Alpha', got %q", input)
+			}
+			return &plane.Project{ID: "proj-alpha", Name: "Alpha", Identifier: "ALPHA"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
+			return "name: Task\n", nil
+		},
+	}
+	project := "Alpha"
+	args := SearchWorkItemsArgs{Query: "task", Project: &project}
+
+	// Act
+	result, err := searchWorkItems(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if capturedParams["project_id"] != "proj-alpha" {
+		t.Errorf("expected project_id=proj-alpha, got %q", capturedParams["project_id"])
+	}
+}
+
+// TestSearchWorkItems_ValidationError verifies missing query returns error.
+func TestSearchWorkItems_ValidationError(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	client := &mockClient{}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{}
+	args := SearchWorkItemsArgs{Query: ""}
+
+	// Act
+	result, err := searchWorkItems(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected IsError=true when query is empty")
+	}
+	tc := result.Content[0].(*mcp.TextContent)
+	if !strings.Contains(tc.Text, "query is required") {
+		t.Errorf("expected 'query is required' in error, got %q", tc.Text)
+	}
+}
+
+// TestSearchWorkItems_ClientError verifies client errors are propagated.
+func TestSearchWorkItems_ClientError(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	client := &mockClient{
+		searchWorkItemsFn: func(ctx context.Context, params map[string]string) ([]plane.SearchWorkItemResult, error) {
+			return nil, errors.New("plane api is down")
+		},
+	}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{}
+	args := SearchWorkItemsArgs{Query: "anything"}
+
+	// Act
+	result, err := searchWorkItems(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected IsError=true when client fails")
+	}
+	tc := result.Content[0].(*mcp.TextContent)
+	if !strings.Contains(tc.Text, "plane api is down") {
+		t.Errorf("expected error to mention 'plane api is down', got %q", tc.Text)
+	}
+}
+
+// TestSearchWorkItems_GracefulDegradation verifies that when one item
+// fails to fetch (GetWorkItemByIdentifier error), the other items are
+// still returned.
+func TestSearchWorkItems_GracefulDegradation(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	searchResults := []plane.SearchWorkItemResult{
+		{ID: "wi-1", Name: "Good One", SequenceID: "1", ProjectIdentifier: "PROJ", ProjectID: "proj-1", WorkspaceSlug: "ws"},
+		{ID: "wi-2", Name: "Bad One", SequenceID: "2", ProjectIdentifier: "PROJ", ProjectID: "proj-1", WorkspaceSlug: "ws"},
+		{ID: "wi-3", Name: "Good Two", SequenceID: "3", ProjectIdentifier: "PROJ", ProjectID: "proj-1", WorkspaceSlug: "ws"},
+	}
+	client := &mockClient{
+		searchWorkItemsFn: func(ctx context.Context, params map[string]string) ([]plane.SearchWorkItemResult, error) {
+			return searchResults, nil
+		},
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			if seq == 2 {
+				return nil, errors.New("item not found")
+			}
+			return &plane.WorkItem{ID: "wi-" + strconv.Itoa(seq), Name: "Item", SequenceID: seq}, nil
+		},
+	}
+	resolver := &mockResolver{}
+	var capturedItems []plane.WorkItem
+	formatter := &mockFormatter{
+		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
+			capturedItems = items
+			return "- name: Item\n- name: Item\n", nil
+		},
+	}
+	args := SearchWorkItemsArgs{Query: "test"}
+
+	// Act
+	result, err := searchWorkItems(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if len(capturedItems) != 2 {
+		t.Fatalf("expected 2 items (bad one skipped), got %d", len(capturedItems))
+	}
+	if capturedItems[0].SequenceID != 1 || capturedItems[1].SequenceID != 3 {
+		t.Errorf("expected sequence IDs 1 and 3, got %d and %d", capturedItems[0].SequenceID, capturedItems[1].SequenceID)
+	}
+}
+
+// TestSearchWorkItems_GracefulDegradation_ParseError verifies that a
+// search result with a malformed sequence_id is skipped gracefully.
+func TestSearchWorkItems_GracefulDegradation_ParseError(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	searchResults := []plane.SearchWorkItemResult{
+		{ID: "wi-bad", Name: "Bad Seq", SequenceID: "not-a-number", ProjectIdentifier: "PROJ", ProjectID: "proj-1", WorkspaceSlug: "ws"},
+		{ID: "wi-good", Name: "Good", SequenceID: "5", ProjectIdentifier: "PROJ", ProjectID: "proj-1", WorkspaceSlug: "ws"},
+	}
+	client := &mockClient{
+		searchWorkItemsFn: func(ctx context.Context, params map[string]string) ([]plane.SearchWorkItemResult, error) {
+			return searchResults, nil
+		},
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{ID: "wi-5", Name: "Good", SequenceID: 5}, nil
+		},
+	}
+	resolver := &mockResolver{}
+	var capturedItems []plane.WorkItem
+	formatter := &mockFormatter{
+		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
+			capturedItems = items
+			return "- name: Good\n", nil
+		},
+	}
+	args := SearchWorkItemsArgs{Query: "test"}
+
+	// Act
+	result, err := searchWorkItems(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if len(capturedItems) != 1 {
+		t.Fatalf("expected 1 item (bad seq skipped), got %d", len(capturedItems))
+	}
+	if capturedItems[0].SequenceID != 5 {
+		t.Errorf("expected sequence ID 5, got %d", capturedItems[0].SequenceID)
+	}
+}
+
+// TestSearchWorkItems_LimitDefault verifies that when no limit is
+// specified, it defaults to 10.
+func TestSearchWorkItems_LimitDefault(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	var capturedLimit string
+	client := &mockClient{
+		searchWorkItemsFn: func(ctx context.Context, params map[string]string) ([]plane.SearchWorkItemResult, error) {
+			capturedLimit = params["limit"]
+			return nil, nil
+		},
+	}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{}
+	args := SearchWorkItemsArgs{Query: "test"} // no Limit
+
+	// Act
+	result, err := searchWorkItems(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Fatal("expected IsError=false")
+	}
+	if capturedLimit != "10" {
+		t.Errorf("expected default limit=10, got %q", capturedLimit)
+	}
+}
+
+// TestSearchWorkItems_LimitCap verifies that a limit above 20 is
+// capped at 20.
+func TestSearchWorkItems_LimitCap(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	var capturedLimit string
+	client := &mockClient{
+		searchWorkItemsFn: func(ctx context.Context, params map[string]string) ([]plane.SearchWorkItemResult, error) {
+			capturedLimit = params["limit"]
+			return nil, nil
+		},
+	}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{}
+	high := 50
+	args := SearchWorkItemsArgs{Query: "test", Limit: &high}
+
+	// Act
+	result, err := searchWorkItems(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Fatal("expected IsError=false")
+	}
+	if capturedLimit != "20" {
+		t.Errorf("expected capped limit=20, got %q", capturedLimit)
+	}
+}
+
+// TestSearchWorkItems_LimitNegative verifies that a limit <= 0
+// defaults to 10.
+func TestSearchWorkItems_LimitNegative(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	var capturedLimit string
+	client := &mockClient{
+		searchWorkItemsFn: func(ctx context.Context, params map[string]string) ([]plane.SearchWorkItemResult, error) {
+			capturedLimit = params["limit"]
+			return nil, nil
+		},
+	}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{}
+	neg := -5
+	args := SearchWorkItemsArgs{Query: "test", Limit: &neg}
+
+	// Act
+	result, err := searchWorkItems(ctx, args, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Fatal("expected IsError=false")
+	}
+	if capturedLimit != "10" {
+		t.Errorf("expected default limit=10 for negative input, got %q", capturedLimit)
 	}
 }

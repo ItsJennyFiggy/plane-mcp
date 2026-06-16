@@ -29,6 +29,7 @@ type planeClient interface {
 	ListProjects(ctx context.Context) ([]plane.Project, error)
 	GetWorkItemByIdentifier(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error)
 	ListWorkItems(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error)
+	SearchWorkItems(ctx context.Context, params map[string]string) ([]plane.SearchWorkItemResult, error)
 	CreateWorkItem(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error)
 	CreateWorkItemComment(ctx context.Context, projectID, itemID, comment string) error
 	UpdateWorkItem(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error)
@@ -469,6 +470,13 @@ type ListWorkItemsArgs struct {
 	State      *string             `json:"state,omitempty"`
 	Module     *string             `json:"module,omitempty"`
 	Limit      *int                `json:"limit,omitempty"`
+}
+
+// SearchWorkItemsArgs are the arguments for the search_work_items tool.
+type SearchWorkItemsArgs struct {
+	Query   string  `json:"query"`
+	Project *string `json:"project,omitempty"`
+	Limit   *int    `json:"limit,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -1088,6 +1096,73 @@ func listWorkItems(ctx context.Context, args ListWorkItemsArgs, client planeClie
 	return toolText(yaml), nil
 }
 
+// searchWorkItems implements the search_work_items tool logic.
+func searchWorkItems(ctx context.Context, args SearchWorkItemsArgs, client planeClient, resolver planeResolver, formatter planeFormatter) (*mcp.CallToolResult, error) {
+	if args.Query == "" {
+		return toolError("query is required"), nil
+	}
+
+	params := map[string]string{
+		"search": args.Query,
+	}
+
+	if args.Project != nil && *args.Project != "" {
+		proj, err := resolver.ResolveProject(ctx, *args.Project)
+		if err != nil {
+			return toolError(fmt.Sprintf("failed to resolve project %q: %v", *args.Project, err)), nil
+		}
+		params["project_id"] = proj.ID
+	}
+
+	// Default limit to 10; hard cap at 20.
+	limit := 10
+	if args.Limit != nil {
+		if *args.Limit <= 0 {
+			limit = 10
+		} else if *args.Limit > 20 {
+			limit = 20
+		} else {
+			limit = *args.Limit
+		}
+	}
+	params["limit"] = strconv.Itoa(limit)
+
+	results, err := client.SearchWorkItems(ctx, params)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to search work items: %v", err)), nil
+	}
+
+	if len(results) == 0 {
+		return toolText("[]"), nil
+	}
+
+	var items []plane.WorkItem
+	for _, r := range results {
+		seqID, err := strconv.Atoi(r.SequenceID)
+		if err != nil {
+			log.Printf("search_work_items: skipping result %s: failed to parse sequence_id %q: %v", r.ID, r.SequenceID, err)
+			continue
+		}
+		item, err := client.GetWorkItemByIdentifier(ctx, r.ProjectIdentifier, seqID)
+		if err != nil {
+			log.Printf("search_work_items: skipping %s-%s: %v", r.ProjectIdentifier, r.SequenceID, err)
+			continue
+		}
+		items = append(items, *item)
+	}
+
+	if len(items) == 0 {
+		return toolText("[]"), nil
+	}
+
+	yaml, err := formatter.FormatWorkItemsYAML(ctx, items, "summary")
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to format work items: %v", err)), nil
+	}
+
+	return toolText(yaml), nil
+}
+
 // createTaskInputSchema builds the JSON Schema for the create_task tool.
 // It overrides the FlexibleStringSlice type to accept "string" in addition
 // to "null" and "array", so that MCP clients which serialise array
@@ -1282,6 +1357,16 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 			InputSchema: listWorkItemsInputSchema(),
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args ListWorkItemsArgs) (*mcp.CallToolResult, any, error) {
 			result, err := listWorkItems(ctx, args, client, resolver, formatter)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("search_work_items", plannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "search_work_items",
+			Description: "Search work items across the workspace by a text query, with optional project filter and limit.",
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args SearchWorkItemsArgs) (*mcp.CallToolResult, any, error) {
+			result, err := searchWorkItems(ctx, args, client, resolver, formatter)
 			return result, nil, err
 		})
 	}

@@ -13,6 +13,7 @@ A custom Go-native Model Context Protocol (MCP) server that integrates directly 
     *   `find_my_work`: Lists items assigned to the current caller.
     *   `get_work_item`: Fetches detail/summary view of a ticket.
     *   `list_work_items`: Lists work items in a project with optional filters.
+    *   `search_work_items`: Searches work items across the workspace by text query.
     *   `report_progress`: Appends comments and transitions states safely in a single action.
     *   `submit_for_review`: Attaches PR links and flags tickets for review.
     *   `create_task`: Resolves labels/assignees by name and registers new tasks.

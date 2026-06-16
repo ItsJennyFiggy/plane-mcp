@@ -912,3 +912,81 @@ func TestClientAddWorkItemsToModule(t *testing.T) {
 		}
 	})
 }
+
+func TestClientSearchWorkItems(t *testing.T) {
+	cfg := &config.Config{
+		PlaneAPIKey:        "test-key",
+		PlaneBaseURL:       "https://plane.example.com",
+		PlaneWorkspaceSlug: "test-workspace",
+	}
+
+	t.Run("Happy path returns search results", func(t *testing.T) {
+		// Arrange
+		client := NewClient(cfg)
+		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+			expectedPath := "/api/v1/workspaces/test-workspace/work-items/search/"
+			if req.URL.Path != expectedPath {
+				t.Errorf("expected path '%s', got '%s'", expectedPath, req.URL.Path)
+			}
+			// Verify search params are forwarded
+			if req.URL.Query().Get("search") != "login bug" {
+				t.Errorf("expected search=login bug, got '%s'", req.URL.Query().Get("search"))
+			}
+			if req.URL.Query().Get("project_id") != "proj-1" {
+				t.Errorf("expected project_id=proj-1, got '%s'", req.URL.Query().Get("project_id"))
+			}
+			body := `{"issues": [{"id": "wi-1", "name": "Fix login", "sequence_id": "1", "project__identifier": "PROJ", "project_id": "proj-1", "workspace__slug": "test-workspace"}, {"id": "wi-2", "name": "Login error", "sequence_id": "2", "project__identifier": "PROJ", "project_id": "proj-1", "workspace__slug": "test-workspace"}]}`
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		})
+
+		// Act
+		results, err := client.SearchWorkItems(context.Background(), map[string]string{
+			"search":     "login bug",
+			"project_id": "proj-1",
+		})
+
+		// Assert
+		if err != nil {
+			t.Fatalf("SearchWorkItems failed: %v", err)
+		}
+		if len(results) != 2 {
+			t.Errorf("expected 2 results, got %d", len(results))
+		}
+		if results[0].ID != "wi-1" || results[0].Name != "Fix login" || results[0].SequenceID != "1" {
+			t.Errorf("unexpected result[0]: %+v", results[0])
+		}
+		if results[0].ProjectIdentifier != "PROJ" {
+			t.Errorf("expected ProjectIdentifier='PROJ', got '%s'", results[0].ProjectIdentifier)
+		}
+		if results[1].ID != "wi-2" {
+			t.Errorf("unexpected result[1]: %+v", results[1])
+		}
+	})
+
+	t.Run("Error path propagates error", func(t *testing.T) {
+		// Arrange
+		client := NewClient(cfg)
+		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: 500,
+				Body:       io.NopCloser(strings.NewReader("server error")),
+			}, nil
+		})
+
+		// Act
+		_, err := client.SearchWorkItems(context.Background(), map[string]string{
+			"search": "anything",
+		})
+
+		// Assert
+		if err == nil {
+			t.Fatal("expected error on 500, got nil")
+		}
+		if !strings.Contains(err.Error(), "500") {
+			t.Errorf("expected error message to mention 500, got: %v", err)
+		}
+	})
+}
