@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.1](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.11.0...v1.11.1) (2026-06-16)
+
+
+### Bug Fixes
+
+* **tools:** fix search_work_items sequence_id type mismatch (AGENT-61) ([#45](https://github.com/ItsJennyFiggy/plane-mcp/issues/45)) ([d5fcb6e](https://github.com/ItsJennyFiggy/plane-mcp/commit/d5fcb6eec189a3f2e8fcd486f84b36890b9bad74))
+
 ## [1.11.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.10.0...v1.11.0) (2026-06-16)
 
 
