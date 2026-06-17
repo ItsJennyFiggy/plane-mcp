@@ -112,6 +112,57 @@ func TestParseIdentifier(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// TestGetProjectID — unit tests for the getProjectID helper
+// ---------------------------------------------------------------------------
+
+func TestGetProjectID(t *testing.T) {
+	tests := []struct {
+		name string
+		p    plane.Expandable[plane.Project]
+		want string
+	}{
+		{
+			name: "prefer Val.ID when Val is present",
+			p: plane.Expandable[plane.Project]{
+				ID:  "fallback-id",
+				Val: &plane.Project{ID: "real-id", Name: "TestProj", Identifier: "TEST"},
+			},
+			want: "real-id",
+		},
+		{
+			name: "fallback to ID when Val is nil",
+			p: plane.Expandable[plane.Project]{
+				ID:  "fallback-id",
+				Val: nil,
+			},
+			want: "fallback-id",
+		},
+		{
+			name: "empty when both are empty",
+			p:    plane.Expandable[plane.Project]{},
+			want: "",
+		},
+		{
+			name: "Val.ID is empty string — returns empty",
+			p: plane.Expandable[plane.Project]{
+				ID:  "fallback-id",
+				Val: &plane.Project{Name: "NoID"},
+			},
+			want: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := getProjectID(tc.p)
+			if got != tc.want {
+				t.Errorf("getProjectID(%+v) = %q, want %q", tc.p, got, tc.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // TestShouldRegister — table-driven tests for shouldRegister
 // ---------------------------------------------------------------------------
 
@@ -4173,9 +4224,11 @@ func TestListWorkItems_StateGroupFilterWithLimit(t *testing.T) {
 	}
 	client := &mockClient{
 		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
-			// limit must NOT be passed to the API when filtering client-side.
-			if _, ok := params["limit"]; ok {
-				t.Error("limit param should NOT be passed to the API when filtering client-side")
+			// When filtering client-side, limit must be set to the safety cap of 1000.
+			if lim, ok := params["limit"]; !ok {
+				t.Error("limit param should be set to safety cap (1000) when filtering client-side")
+			} else if lim != "1000" {
+				t.Errorf("limit param should be \"1000\" (safety cap), got %q", lim)
 			}
 			return allItems, nil
 		},
