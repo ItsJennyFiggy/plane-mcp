@@ -1767,10 +1767,13 @@ func listWorkItems(ctx context.Context, args ListWorkItemsArgs, client planeClie
 		params["labels"] = strings.Join(ids, ",")
 	}
 
-	// When filtering by state_group, do NOT forward state_group or limit to the
-	// API.  The Plane API ignores state_group, and listAllGeneric would
-	// prematurely slice unfiltered results when limit is present.
+	// When filtering by state_group, do NOT forward state_group to the
+	// API (the Plane API ignores it). We strip the user's limit parameter
+	// to get all results for client-side filtering, but set a safety cap
+	// of 1000 to prevent runaway requests.
+	maxItems := 1000
 	if filterByStateGroup {
+		params["limit"] = strconv.Itoa(maxItems)
 		if args.Limit != nil && *args.Limit > 0 {
 			// Limit is applied AFTER client-side filtering (see below).
 		}
