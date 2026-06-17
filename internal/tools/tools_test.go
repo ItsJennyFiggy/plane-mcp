@@ -6605,6 +6605,34 @@ func TestListRelations_RelatedItemNotFound(t *testing.T) {
 	}
 }
 
+func TestListRelations_NilRelations(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{ID: "wi-1", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+		},
+		listWorkItemRelationsFn: func(ctx context.Context, projectID, workItemID string) (*plane.WorkItemRelations, error) {
+			return nil, nil
+		},
+	}
+	args := ListRelationsArgs{Identifier: "PROJ-1"}
+
+	result, err := listRelations(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected IsError=true when relations is nil")
+	}
+	textContent, ok := result.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent, got %T", result.Content[0])
+	}
+	if !strings.Contains(textContent.Text, "relations data is missing or empty") {
+		t.Errorf("expected 'relations data is missing or empty' in error, got: %s", textContent.Text)
+	}
+}
+
 func TestRegisterWithDeps_IncludesRelationTools(t *testing.T) {
 	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
 	client := &mockClient{}
