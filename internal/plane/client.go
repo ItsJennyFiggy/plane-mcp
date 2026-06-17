@@ -440,6 +440,18 @@ func (c *Client) UpdateWorkItem(ctx context.Context, projectID, workItemID strin
 	return &item, nil
 }
 
+// isHTMLTag checks whether trimmed text starts with a valid HTML tag, comment,
+// doctype, or processing instruction. It is used to decide whether a comment
+// body already contains HTML and should not be re-wrapped.
+func isHTMLTag(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "<") || len(trimmed) < 2 {
+		return false
+	}
+	next := trimmed[1]
+	return (next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z') || next == '/' || next == '!' || next == '?'
+}
+
 // CreateWorkItemComment posts a comment on a work item.
 // Path: POST /api/v1/workspaces/{slug}/projects/{projectID}/work-items/{workItemID}/comments/
 // If text already looks like HTML (starts with '<' after trimming whitespace), it is used directly;
@@ -447,7 +459,7 @@ func (c *Client) UpdateWorkItem(ctx context.Context, projectID, workItemID strin
 func (c *Client) CreateWorkItemComment(ctx context.Context, projectID, workItemID, text string) error {
 	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/work-items/%s/comments/", c.WorkspaceSlug, projectID, workItemID)
 	commentHTML := text
-	if !strings.HasPrefix(strings.TrimSpace(text), "<") {
+	if !isHTMLTag(text) {
 		commentHTML = "<p>" + text + "</p>"
 	}
 	body := map[string]any{
