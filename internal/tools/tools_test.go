@@ -8274,3 +8274,150 @@ func TestListChildren_FiltersToParentOnly(t *testing.T) {
 		t.Errorf("expected 'Unrelated task' to be filtered out, but it appeared in output:\n%s", text)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// AGENT-80 regression tests — add_comment HTML pass-through
+// ---------------------------------------------------------------------------
+
+// TestAddComment_RealHTMLPassesThrough — AGENT-80 regression: a body that is already
+// valid HTML must be forwarded as-is, not entity-escaped through the Markdown converter.
+func TestAddComment_RealHTMLPassesThrough(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	workItem := &plane.WorkItem{
+		ID:         "wi-80",
+		SequenceID: 80,
+		Project:    plane.Expandable[plane.Project]{ID: "proj-uuid"},
+	}
+	var capturedComment string
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return workItem, nil
+		},
+		createWorkItemCommentFn: func(ctx context.Context, projectID, itemID, comment string) error {
+			capturedComment = comment
+			return nil
+		},
+	}
+	args := AddCommentArgs{Identifier: "PROJ-80", Body: "<p>This is real HTML</p>"}
+
+	// Act
+	result, err := addComment(ctx, args, client)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	// The HTML must arrive at the client verbatim — NOT entity-escaped.
+	if capturedComment != "<p>This is real HTML</p>" {
+		t.Errorf("capturedComment = %q, want %q (real HTML must not be entity-escaped)", capturedComment, "<p>This is real HTML</p>")
+	}
+}
+
+// TestAddComment_NonTagChevronStillEscaped — AGENT-80 + PR#59 guard: non-tag uses of '<'
+// such as "I <3 this" must still be entity-escaped to prevent XSS injection.
+func TestAddComment_NonTagChevronStillEscaped(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	workItem := &plane.WorkItem{
+		ID:         "wi-81",
+		SequenceID: 81,
+		Project:    plane.Expandable[plane.Project]{ID: "proj-uuid"},
+	}
+	tests := []struct {
+		name    string
+		body    string
+		wantSub string // substring that must appear in the captured comment
+		notSub  string // substring that must NOT appear in the captured comment
+	}{
+		{
+			name:    "heart emoji text",
+			body:    "I <3 this",
+			wantSub: "&lt;3",
+			notSub:  "<3",
+		},
+		{
+			name:    "arrow operator",
+			body:    "arrow <- here",
+			wantSub: "&lt;-",
+			notSub:  "<-",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var capturedComment string
+			client := &mockClient{
+				getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+					return workItem, nil
+				},
+				createWorkItemCommentFn: func(ctx context.Context, projectID, itemID, comment string) error {
+					capturedComment = comment
+					return nil
+				},
+			}
+			args := AddCommentArgs{Identifier: "PROJ-81", Body: tc.body}
+
+			// Act
+			result, err := addComment(ctx, args, client)
+
+			// Assert
+			if err != nil {
+				t.Fatalf("unexpected Go error: %v", err)
+			}
+			if result.IsError {
+				t.Errorf("expected IsError=false: %+v", result.Content)
+			}
+			if !strings.Contains(capturedComment, tc.wantSub) {
+				t.Errorf("capturedComment = %q, want it to contain %q (non-tag '<' must be escaped)", capturedComment, tc.wantSub)
+			}
+			if strings.Contains(capturedComment, tc.notSub) {
+				t.Errorf("capturedComment = %q, must NOT contain %q (raw non-tag '<' must be escaped)", capturedComment, tc.notSub)
+			}
+		})
+	}
+}
+
+// TestAddComment_MarkdownStillConverts — AGENT-80: Markdown must still be converted to HTML
+// correctly (regression guard for the existing happy-path behavior).
+func TestAddComment_MarkdownStillConverts(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	workItem := &plane.WorkItem{
+		ID:         "wi-82",
+		SequenceID: 82,
+		Project:    plane.Expandable[plane.Project]{ID: "proj-uuid"},
+	}
+	var capturedComment string
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return workItem, nil
+		},
+		createWorkItemCommentFn: func(ctx context.Context, projectID, itemID, comment string) error {
+			capturedComment = comment
+			return nil
+		},
+	}
+	args := AddCommentArgs{Identifier: "PROJ-82", Body: "**bold** and *italic*"}
+
+	// Act
+	result, err := addComment(ctx, args, client)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	// Markdown must be converted: **bold** → <strong>bold</strong>, *italic* → <em>italic</em>
+	if !strings.Contains(capturedComment, "<strong>bold</strong>") {
+		t.Errorf("capturedComment = %q, want it to contain <strong>bold</strong>", capturedComment)
+	}
+	if !strings.Contains(capturedComment, "<em>italic</em>") {
+		t.Errorf("capturedComment = %q, want it to contain <em>italic</em>", capturedComment)
+	}
+}

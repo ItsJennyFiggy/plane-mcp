@@ -440,10 +440,13 @@ func (c *Client) UpdateWorkItem(ctx context.Context, projectID, workItemID strin
 	return &item, nil
 }
 
-// isHTMLTag checks whether trimmed text starts with a valid HTML tag, comment,
+// IsHTMLTag checks whether trimmed text starts with a valid HTML tag, comment,
 // doctype, or processing instruction. It is used to decide whether a comment
-// body already contains HTML and should not be re-wrapped.
-func isHTMLTag(text string) bool {
+// body already contains HTML and should not be re-wrapped or Markdown-converted.
+//
+// It deliberately rejects non-tag uses of '<' such as "I <3 this" or "arrow <- here"
+// so that those are still safely entity-escaped.
+func IsHTMLTag(text string) bool {
 	trimmed := strings.TrimSpace(text)
 	if !strings.HasPrefix(trimmed, "<") || len(trimmed) < 2 {
 		return false
@@ -451,6 +454,9 @@ func isHTMLTag(text string) bool {
 	next := trimmed[1]
 	return (next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z') || next == '/' || next == '!' || next == '?'
 }
+
+// isHTMLTag is the unexported alias kept for internal use within this package.
+func isHTMLTag(text string) bool { return IsHTMLTag(text) }
 
 // CreateWorkItemComment posts a comment on a work item.
 // Path: POST /api/v1/workspaces/{slug}/projects/{projectID}/work-items/{workItemID}/comments/

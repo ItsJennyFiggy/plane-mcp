@@ -867,7 +867,16 @@ func addComment(ctx context.Context, args AddCommentArgs, client planeClient) (*
 
 	projectID := getProjectID(item.Project)
 
-	commentHTML := convertDescriptionToHTML(args.Body)
+	// If the body is already HTML (starts with a valid tag), pass it through directly
+	// so that tags like <p>, <strong>, <ul> etc. are not entity-escaped by the Markdown
+	// converter. Non-tag uses of '<' (e.g. "I <3 this", "arrow <- here") are correctly
+	// rejected by plane.IsHTMLTag and still go through the Markdown path, which escapes them.
+	var commentHTML string
+	if plane.IsHTMLTag(args.Body) {
+		commentHTML = args.Body
+	} else {
+		commentHTML = convertDescriptionToHTML(args.Body)
+	}
 	if err := client.CreateWorkItemComment(ctx, projectID, item.ID, commentHTML); err != nil {
 		return toolError(fmt.Sprintf("failed to add comment: %v", err)), nil
 	}
