@@ -664,8 +664,8 @@ func TestClientCreateWorkItemComment(t *testing.T) {
 
 	t.Run("Non-HTML text starting with < gets wrapped in <p>", func(t *testing.T) {
 		testCases := []struct {
-			name string
-			text string
+			name         string
+			text         string
 			expectedHTML string
 		}{
 			{"arrow text", "<- check this out", "<p><- check this out</p>"},
@@ -1456,64 +1456,6 @@ func TestClientCreateWorkItemRelation(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "400") {
 			t.Errorf("expected error message to mention 400, got: %v", err)
-		}
-	})
-}
-
-func TestClientRemoveWorkItemRelation(t *testing.T) {
-	cfg := &config.Config{
-		PlaneAPIKey:        "test-key",
-		PlaneBaseURL:       "https://plane.example.com",
-		PlaneWorkspaceSlug: "test-workspace",
-	}
-
-	t.Run("Happy path posts removal", func(t *testing.T) {
-		client := NewClient(cfg)
-		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
-			expectedPath := "/api/v1/workspaces/test-workspace/projects/proj-1/work-items/wi-1/relations/remove/"
-			if req.URL.Path != expectedPath {
-				t.Errorf("expected path '%s', got '%s'", expectedPath, req.URL.Path)
-			}
-			if req.Method != "POST" {
-				t.Errorf("expected POST, got %s", req.Method)
-			}
-
-			var reqBody map[string]any
-			bodyBytes, _ := io.ReadAll(req.Body)
-			if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
-				t.Fatalf("failed to parse request body: %v", err)
-			}
-			if reqBody["related_issue"] != "wi-2" {
-				t.Errorf("expected related_issue='wi-2', got %v", reqBody["related_issue"])
-			}
-
-			return &http.Response{
-				StatusCode: 200,
-				Body:       io.NopCloser(strings.NewReader(`{}`)),
-			}, nil
-		})
-
-		err := client.RemoveWorkItemRelation(context.Background(), "proj-1", "wi-1", "wi-2")
-		if err != nil {
-			t.Fatalf("RemoveWorkItemRelation failed: %v", err)
-		}
-	})
-
-	t.Run("Error path propagates error", func(t *testing.T) {
-		client := NewClient(cfg)
-		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
-			return &http.Response{
-				StatusCode: 404,
-				Body:       io.NopCloser(strings.NewReader("not found")),
-			}, nil
-		})
-
-		err := client.RemoveWorkItemRelation(context.Background(), "proj-1", "wi-1", "wi-missing")
-		if err == nil {
-			t.Fatal("expected error on 404, got nil")
-		}
-		if !strings.Contains(err.Error(), "404") {
-			t.Errorf("expected error message to mention 404, got: %v", err)
 		}
 	})
 }

@@ -45,7 +45,6 @@ type planeClient interface {
 	GetWorkItem(ctx context.Context, projectID, workItemID string) (*plane.WorkItem, error)
 	ListWorkItemRelations(ctx context.Context, projectID, workItemID string) (*plane.WorkItemRelations, error)
 	CreateWorkItemRelation(ctx context.Context, projectID, workItemID, relationType string, issues []string) error
-	RemoveWorkItemRelation(ctx context.Context, projectID, workItemID, relatedIssue string) error
 	DeleteWorkItem(ctx context.Context, projectID, workItemID string) error
 }
 
@@ -355,8 +354,8 @@ type FindMyWorkArgs struct {
 
 // GetWorkItemArgs are the arguments for the get_work_item tool.
 type GetWorkItemArgs struct {
-	Identifier string         `json:"identifier"`
-	Detail     FlexibleDetail `json:"detail"`
+	Identifier string `json:"identifier"`
+	Detail     string `json:"detail"`
 }
 
 // ReportProgressArgs are the arguments for the report_progress tool.
@@ -457,67 +456,13 @@ func (s *FlexibleStringSlice) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// FlexibleDetail is a string that unmarshals from either a JSON string or a
-// JSON boolean, providing parsing fallbacks for the get_work_item detail
-// parameter. Boolean true maps to "full", false maps to "summary".
-// Unrecognized string values silently default to "summary".
-type FlexibleDetail string
-
-// Valid detail levels.
+// Valid detail level constants for get_work_item.
+// These are the canonical string values accepted by the tool schema enum.
 const (
-	DetailSummary           FlexibleDetail = "summary"
-	DetailFull              FlexibleDetail = "full"
-	DetailSummaryWithLabels FlexibleDetail = "summary_with_labels"
+	DetailSummary           = "summary"
+	DetailFull              = "full"
+	DetailSummaryWithLabels = "summary_with_labels"
 )
-
-// UnmarshalJSON implements json.Unmarshaler so FlexibleDetail accepts:
-//   - a JSON boolean: true → "full", false → "summary"
-//   - a JSON string: normalised (case-folded, trimmed) and mapped to a valid
-//     detail level; "true" → "full", "false" → "summary", unrecognised → "summary"
-//   - null / empty → "summary"
-func (d *FlexibleDetail) UnmarshalJSON(data []byte) error {
-	raw := bytes.TrimSpace(data)
-
-	// JSON null or empty
-	if len(raw) == 0 || string(raw) == "null" {
-		*d = DetailSummary
-		return nil
-	}
-
-	// Try boolean first
-	if string(raw) == "true" {
-		*d = DetailFull
-		return nil
-	}
-	if string(raw) == "false" {
-		*d = DetailSummary
-		return nil
-	}
-
-	// Try string
-	var s string
-	if err := json.Unmarshal(raw, &s); err != nil {
-		// Not a valid JSON value — default to summary.
-		*d = DetailSummary
-		return nil
-	}
-
-	*d = normalizeDetail(s)
-	return nil
-}
-
-// normalizeDetail folds a string detail value to a recognised constant.
-func normalizeDetail(s string) FlexibleDetail {
-	s = strings.TrimSpace(s)
-	switch strings.ToLower(s) {
-	case "full", "true":
-		return DetailFull
-	case "summary_with_labels", "summary-with-labels":
-		return DetailSummaryWithLabels
-	default:
-		return DetailSummary
-	}
-}
 
 // ListProjectsArgs are the arguments for the list_projects tool.
 type ListProjectsArgs struct {
@@ -731,7 +676,7 @@ func getWorkItem(ctx context.Context, args GetWorkItemArgs, client planeClient, 
 		detail = DetailSummary
 	}
 
-	yaml, err := formatter.FormatWorkItemYAML(ctx, item, string(detail))
+	yaml, err := formatter.FormatWorkItemYAML(ctx, item, detail)
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to format work item: %v", err)), nil
 	}
@@ -867,7 +812,16 @@ func addComment(ctx context.Context, args AddCommentArgs, client planeClient) (*
 
 	projectID := getProjectID(item.Project)
 
-	commentHTML := convertDescriptionToHTML(args.Body)
+	// If the body is already HTML (starts with a valid tag), pass it through directly
+	// so that tags like <p>, <strong>, <ul> etc. are not entity-escaped by the Markdown
+	// converter. Non-tag uses of '<' (e.g. "I <3 this", "arrow <- here") are correctly
+	// rejected by plane.IsHTMLTag and still go through the Markdown path, which escapes them.
+	var commentHTML string
+	if plane.IsHTMLTag(args.Body) {
+		commentHTML = args.Body
+	} else {
+		commentHTML = convertDescriptionToHTML(args.Body)
+	}
 	if err := client.CreateWorkItemComment(ctx, projectID, item.ID, commentHTML); err != nil {
 		return toolError(fmt.Sprintf("failed to add comment: %v", err)), nil
 	}
@@ -967,33 +921,15 @@ func setRelation(ctx context.Context, args SetRelationArgs, client planeClient) 
 }
 
 // removeRelation implements the remove_relation tool logic.
-func removeRelation(ctx context.Context, args RemoveRelationArgs, client planeClient) (*mcp.CallToolResult, error) {
-	// Resolve source work item
-	srcProj, srcSeq, err := parseIdentifier(args.Identifier)
-	if err != nil {
-		return toolError(err.Error()), nil
-	}
-	srcItem, err := client.GetWorkItemByIdentifier(ctx, srcProj, srcSeq)
-	if err != nil {
-		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
-	}
-
-	// Resolve related work item
-	relProj, relSeq, err := parseIdentifier(args.RelatedIdentifier)
-	if err != nil {
-		return toolError(err.Error()), nil
-	}
-	relItem, err := client.GetWorkItemByIdentifier(ctx, relProj, relSeq)
-	if err != nil {
-		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.RelatedIdentifier, err)), nil
-	}
-
-	err = client.RemoveWorkItemRelation(ctx, getProjectID(srcItem.Project), srcItem.ID, relItem.ID)
-	if err != nil {
-		return toolError(fmt.Sprintf("failed to remove relation: %v", err)), nil
-	}
-
-	return toolText(fmt.Sprintf("Relation removed between %s and %s", args.Identifier, args.RelatedIdentifier)), nil
+//
+// AGENT-79: The Plane public API exposes no relation-removal endpoint for API-key
+// authentication. The v1 /relations/ route is GET/POST only (no DELETE), and the
+// app-level /remove-relation/ route requires session-cookie auth the MCP server
+// does not hold (returns 401). The official Plane MCP server ships no removal tool
+// for the same reason. We therefore fail fast with a clear, actionable error
+// rather than make a request that cannot succeed.
+func removeRelation(_ context.Context, _ RemoveRelationArgs, _ planeClient) (*mcp.CallToolResult, error) {
+	return toolError("remove_relation is not supported: the Plane API provides no relation-removal endpoint for API-key authentication. Remove the relation from the Plane web UI instead."), nil
 }
 
 // listRelations implements the list_relations tool logic.
@@ -1147,9 +1083,20 @@ func listChildren(ctx context.Context, args ListChildrenArgs, client planeClient
 	}
 
 	params := map[string]string{"parent": parentItem.ID}
-	children, err := client.ListWorkItems(ctx, getProjectID(parentItem.Project), params)
+	allItems, err := client.ListWorkItems(ctx, getProjectID(parentItem.Project), params)
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to list children: %v", err)), nil
+	}
+
+	// Filter client-side: keep only items whose Parent UUID matches the resolved
+	// parent. The Plane API accepts the parent query parameter as a hint but some
+	// deployments return the full project list regardless; we enforce the filter
+	// here so callers always get exactly the direct children of the given item.
+	var children []plane.WorkItem
+	for _, item := range allItems {
+		if item.Parent != nil && *item.Parent == parentItem.ID {
+			children = append(children, item)
+		}
 	}
 
 	if len(children) == 0 {
@@ -2062,22 +2009,35 @@ func listWorkItemsInputSchema() *jsonschema.Schema {
 }
 
 // getWorkItemInputSchema builds the JSON Schema for the get_work_item tool.
-// It constrains detail to the three valid string enum values.
-// Note: the schema advertises only string enum values, but FlexibleDetail
-// also accepts JSON booleans at parse time (true → "full", false →
-// "summary") as a defensive fallback for clients that serialise boolean
-// parameters.
+// It constrains detail to the three canonical string enum values and adds
+// per-value descriptions so that LLM callers know when to use each level.
 func getWorkItemInputSchema() *jsonschema.Schema {
 	schema, err := jsonschema.For[GetWorkItemArgs](nil)
 	if err != nil {
 		panic(fmt.Sprintf("get_work_item: failed to build input schema: %v", err))
 	}
-	// Constrain detail to the valid enum values.
+	// Constrain detail to the canonical enum values, document each level, and
+	// give it a default so omitting it is valid (defaults to "summary").
 	for name, prop := range schema.Properties {
 		if name == "detail" {
-			prop.Enum = []any{"summary", "full", "summary_with_labels"}
+			prop.Enum = []any{DetailSummary, DetailFull, DetailSummaryWithLabels}
+			prop.Default = json.RawMessage(`"` + DetailSummary + `"`)
+			prop.Description = `Level of detail to return. Optional; defaults to "summary". One of:
+  "summary"             — identifier, name, state, priority, and assignees only (default; use for listings and quick lookups)
+  "full"                — all fields including description, labels, relations, dates, and metadata (use when the full context is needed)
+  "summary_with_labels" — summary fields plus labels (use when label context matters but full detail is not required)`
 		}
 	}
+	// detail is optional (it has a default), so drop it from the inferred
+	// required set. Without this, the SDK rejects ordinary identifier-only calls
+	// with "missing properties: [detail]" before the handler's default applies.
+	required := schema.Required[:0]
+	for _, name := range schema.Required {
+		if name != "detail" {
+			required = append(required, name)
+		}
+	}
+	schema.Required = required
 	return schema
 }
 
@@ -2298,7 +2258,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 	if shouldRegister("remove_relation", plannerFull, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "remove_relation",
-			Description: "Remove a relation between two work items by their project-prefixed identifiers (e.g. PROJ-123).",
+			Description: "NOT FUNCTIONAL — the Plane API has no relation-removal endpoint for API-key auth. Calls return an error; remove relations via the Plane web UI.",
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, IdempotentHint: true},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args RemoveRelationArgs) (*mcp.CallToolResult, any, error) {
 			result, err := removeRelation(ctx, args, client)

@@ -551,7 +551,6 @@ type mockClient struct {
 	getWorkItemFn             func(ctx context.Context, projectID, workItemID string) (*plane.WorkItem, error)
 	listWorkItemRelationsFn   func(ctx context.Context, projectID, workItemID string) (*plane.WorkItemRelations, error)
 	createWorkItemRelationFn  func(ctx context.Context, projectID, workItemID, relationType string, issues []string) error
-	removeWorkItemRelationFn  func(ctx context.Context, projectID, workItemID, relatedIssue string) error
 	deleteWorkItemFn          func(ctx context.Context, projectID, workItemID string) error
 }
 
@@ -608,9 +607,6 @@ func (m *mockClient) ListWorkItemRelations(ctx context.Context, projectID, workI
 }
 func (m *mockClient) CreateWorkItemRelation(ctx context.Context, projectID, workItemID, relationType string, issues []string) error {
 	return m.createWorkItemRelationFn(ctx, projectID, workItemID, relationType, issues)
-}
-func (m *mockClient) RemoveWorkItemRelation(ctx context.Context, projectID, workItemID, relatedIssue string) error {
-	return m.removeWorkItemRelationFn(ctx, projectID, workItemID, relatedIssue)
 }
 func (m *mockClient) DeleteWorkItem(ctx context.Context, projectID, workItemID string) error {
 	return m.deleteWorkItemFn(ctx, projectID, workItemID)
@@ -1861,165 +1857,42 @@ func TestGetWorkItem_FormatError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// FlexibleDetail unmarshaling tests
+// AGENT-81: detail parameter — strict string enum tests
+//
+// The FlexibleDetail type (with boolean/alias coercion) was removed in AGENT-81.
+// The detail field is now a plain string validated by the MCP schema enum at the
+// protocol layer. The tests below replace the old FlexibleDetail unmarshaling
+// tests and verify:
+//   (a) the three canonical constants are valid string values
+//   (b) each value reaches the formatter correctly via getWorkItem
+//   (c) the schema enum is constrained to exactly the three canonical values
+//
+// Tests for boolean coercion (true→"full", false→"summary") and alias coercion
+// ("summary-with-labels", "true", "false" strings) were removed because those
+// inputs are now rejected at the MCP SDK schema-validation layer before they
+// reach Go code — the coercion was dead code and its removal is intentional
+// per the AGENT-81 design decision.
 // ---------------------------------------------------------------------------
 
-func TestFlexibleDetail_UnmarshalJSON_BoolTrue(t *testing.T) {
-	var d FlexibleDetail
-	if err := json.Unmarshal([]byte("true"), &d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+// TestDetailConstants — verify the three canonical string constants have the expected values.
+func TestDetailConstants(t *testing.T) {
+	if DetailSummary != "summary" {
+		t.Errorf("DetailSummary = %q, want %q", DetailSummary, "summary")
 	}
-	if d != DetailFull {
-		t.Errorf("expected 'full', got %q", d)
+	if DetailFull != "full" {
+		t.Errorf("DetailFull = %q, want %q", DetailFull, "full")
 	}
-}
-
-func TestFlexibleDetail_UnmarshalJSON_BoolFalse(t *testing.T) {
-	var d FlexibleDetail
-	if err := json.Unmarshal([]byte("false"), &d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d != DetailSummary {
-		t.Errorf("expected 'summary', got %q", d)
-	}
-}
-
-func TestFlexibleDetail_UnmarshalJSON_StringFull(t *testing.T) {
-	var d FlexibleDetail
-	if err := json.Unmarshal([]byte(`"full"`), &d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d != DetailFull {
-		t.Errorf("expected 'full', got %q", d)
-	}
-}
-
-func TestFlexibleDetail_UnmarshalJSON_StringSummary(t *testing.T) {
-	var d FlexibleDetail
-	if err := json.Unmarshal([]byte(`"summary"`), &d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d != DetailSummary {
-		t.Errorf("expected 'summary', got %q", d)
-	}
-}
-
-func TestFlexibleDetail_UnmarshalJSON_StringSummaryWithLabels(t *testing.T) {
-	var d FlexibleDetail
-	if err := json.Unmarshal([]byte(`"summary_with_labels"`), &d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d != DetailSummaryWithLabels {
-		t.Errorf("expected 'summary_with_labels', got %q", d)
-	}
-}
-
-func TestFlexibleDetail_UnmarshalJSON_StringTrueMapsToFull(t *testing.T) {
-	var d FlexibleDetail
-	if err := json.Unmarshal([]byte(`"true"`), &d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d != DetailFull {
-		t.Errorf("expected 'full' for string 'true', got %q", d)
-	}
-}
-
-func TestFlexibleDetail_UnmarshalJSON_StringFalseMapsToSummary(t *testing.T) {
-	var d FlexibleDetail
-	if err := json.Unmarshal([]byte(`"false"`), &d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d != DetailSummary {
-		t.Errorf("expected 'summary' for string 'false', got %q", d)
-	}
-}
-
-func TestFlexibleDetail_UnmarshalJSON_CaseInsensitive(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected FlexibleDetail
-	}{
-		{`"FULL"`, DetailFull},
-		{`"Full"`, DetailFull},
-		{`"SUMMARY"`, DetailSummary},
-		{`"Summary"`, DetailSummary},
-		{`"SUMMARY_WITH_LABELS"`, DetailSummaryWithLabels},
-		{`"Summary_With_Labels"`, DetailSummaryWithLabels},
-	}
-	for _, tc := range tests {
-		var d FlexibleDetail
-		if err := json.Unmarshal([]byte(tc.input), &d); err != nil {
-			t.Errorf("input %s: unexpected error: %v", tc.input, err)
-			continue
-		}
-		if d != tc.expected {
-			t.Errorf("input %s: expected %q, got %q", tc.input, tc.expected, d)
-		}
-	}
-}
-
-func TestFlexibleDetail_UnmarshalJSON_WhitespaceTrimmed(t *testing.T) {
-	var d FlexibleDetail
-	if err := json.Unmarshal([]byte(`"  full  "`), &d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d != DetailFull {
-		t.Errorf("expected 'full' after trimming, got %q", d)
-	}
-}
-
-func TestFlexibleDetail_UnmarshalJSON_UnrecognizedDefaultsToSummary(t *testing.T) {
-	tests := []string{`"all"`, `"everything"`, `"detailed"`, `"unknown"`}
-	for _, input := range tests {
-		var d FlexibleDetail
-		if err := json.Unmarshal([]byte(input), &d); err != nil {
-			t.Errorf("input %s: unexpected error: %v", input, err)
-			continue
-		}
-		if d != DetailSummary {
-			t.Errorf("input %s: expected 'summary' (default), got %q", input, d)
-		}
-	}
-}
-
-func TestFlexibleDetail_UnmarshalJSON_Null(t *testing.T) {
-	var d FlexibleDetail
-	if err := json.Unmarshal([]byte("null"), &d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d != DetailSummary {
-		t.Errorf("expected 'summary' for null, got %q", d)
-	}
-}
-
-func TestFlexibleDetail_UnmarshalJSON_EmptyString(t *testing.T) {
-	var d FlexibleDetail
-	if err := json.Unmarshal([]byte(`""`), &d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d != DetailSummary {
-		t.Errorf("expected 'summary' for empty string, got %q", d)
-	}
-}
-
-func TestFlexibleDetail_UnmarshalJSON_SummaryWithLabelsHyphenVariant(t *testing.T) {
-	var d FlexibleDetail
-	if err := json.Unmarshal([]byte(`"summary-with-labels"`), &d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d != DetailSummaryWithLabels {
-		t.Errorf("expected 'summary_with_labels' for hyphen variant, got %q", d)
+	if DetailSummaryWithLabels != "summary_with_labels" {
+		t.Errorf("DetailSummaryWithLabels = %q, want %q", DetailSummaryWithLabels, "summary_with_labels")
 	}
 }
 
 // ---------------------------------------------------------------------------
-// getWorkItem detail normalisation integration tests
+// getWorkItem detail integration tests
 // ---------------------------------------------------------------------------
 
-// TestGetWorkItem_DetailPassedToFormatter verifies that a non-default
-// FlexibleDetail (DetailFull) reaches the formatter as the normalised
-// string "full" when set directly on the args struct (the handler-level
-// path, complementing the UnmarshalJSON unit tests).
+// TestGetWorkItem_DetailPassedToFormatter verifies that the "full" detail value
+// reaches the formatter correctly via the handler (AGENT-81: plain string path).
 func TestGetWorkItem_DetailPassedToFormatter(t *testing.T) {
 	ctx := context.Background()
 	workItem := &plane.WorkItem{ID: "wi-1", Name: "Test", SequenceID: 1}
@@ -2035,7 +1908,7 @@ func TestGetWorkItem_DetailPassedToFormatter(t *testing.T) {
 			return "name: Test\n", nil
 		},
 	}
-	// Set DetailFull explicitly — the handler should cast it to "full" for the formatter.
+	// Use the string constant directly — detail is a plain string, no coercion.
 	args := GetWorkItemArgs{Identifier: "PROJ-1", Detail: DetailFull}
 
 	result, err := getWorkItem(ctx, args, client, formatter)
@@ -6567,86 +6440,34 @@ func TestSetRelation_APIFailure(t *testing.T) {
 	}
 }
 
-func TestRemoveRelation_HappyPath(t *testing.T) {
+// TestRemoveRelation_Unsupported is the AGENT-79 regression test. The Plane public
+// API exposes no relation-removal endpoint for API-key authentication, so the tool
+// must fail fast with a clear error and must never depend on a client call.
+//
+// Arrange: a mockClient with no behaviour wired (any client call would nil-panic).
+// Act:     call removeRelation.
+// Assert:  IsError is true, the message explains it is unsupported, and the client
+//
+//	was never touched.
+func TestRemoveRelation_Unsupported(t *testing.T) {
+	// Arrange
 	ctx := context.Background()
-	var capturedRelatedIssue string
-	var capturedWorkItemID string
+	client := &mockClient{} // intentionally empty: the handler must not touch the client
+	args := RemoveRelationArgs{Identifier: "PROJ-1", RelatedIdentifier: "PROJ-2"}
 
-	client := &mockClient{
-		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
-			if pi == "PROJ" && seq == 1 {
-				return &plane.WorkItem{ID: "wi-1", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
-			}
-			return &plane.WorkItem{ID: "wi-2", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
-		},
-		removeWorkItemRelationFn: func(ctx context.Context, projectID, workItemID, relatedIssue string) error {
-			capturedWorkItemID = workItemID
-			capturedRelatedIssue = relatedIssue
-			return nil
-		},
-	}
-	args := RemoveRelationArgs{
-		Identifier:        "PROJ-1",
-		RelatedIdentifier: "PROJ-2",
-	}
-
+	// Act
 	result, err := removeRelation(ctx, args, client)
-	if err != nil {
-		t.Fatalf("unexpected Go error: %v", err)
-	}
-	if result.IsError {
-		t.Errorf("expected IsError=false: %+v", result.Content)
-	}
-	if capturedWorkItemID != "wi-1" {
-		t.Errorf("expected workItemID='wi-1', got %q", capturedWorkItemID)
-	}
-	if capturedRelatedIssue != "wi-2" {
-		t.Errorf("expected relatedIssue='wi-2', got %q", capturedRelatedIssue)
-	}
-}
 
-func TestRemoveRelation_SourceNotFound(t *testing.T) {
-	ctx := context.Background()
-	client := &mockClient{
-		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
-			return nil, errors.New("not found")
-		},
-	}
-	args := RemoveRelationArgs{
-		Identifier:        "PROJ-99",
-		RelatedIdentifier: "PROJ-2",
-	}
-
-	result, err := removeRelation(ctx, args, client)
+	// Assert
 	if err != nil {
 		t.Fatalf("unexpected Go error: %v", err)
 	}
 	if !result.IsError {
-		t.Error("expected IsError=true when source item not found")
+		t.Fatal("expected IsError=true: remove_relation is not supported by the Plane API")
 	}
-}
-
-func TestRemoveRelation_APIFailure(t *testing.T) {
-	ctx := context.Background()
-	client := &mockClient{
-		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
-			return &plane.WorkItem{ID: "wi-1", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
-		},
-		removeWorkItemRelationFn: func(ctx context.Context, projectID, workItemID, relatedIssue string) error {
-			return errors.New("api error")
-		},
-	}
-	args := RemoveRelationArgs{
-		Identifier:        "PROJ-1",
-		RelatedIdentifier: "PROJ-2",
-	}
-
-	result, err := removeRelation(ctx, args, client)
-	if err != nil {
-		t.Fatalf("unexpected Go error: %v", err)
-	}
-	if !result.IsError {
-		t.Error("expected IsError=true when API fails")
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "not supported") {
+		t.Errorf("expected message to state the tool is not supported, got: %s", text)
 	}
 }
 
@@ -7119,17 +6940,23 @@ func TestClearParent_UpdateError(t *testing.T) {
 func TestListChildren_HappyPath(t *testing.T) {
 	ctx := context.Background()
 
+	// parentID must match what GetWorkItemByIdentifier returns, so the client-side
+	// filter (Parent == parentItem.ID) keeps both children.
+	parentID := "wi-parent"
+
 	client := &mockClient{
 		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
-			return &plane.WorkItem{ID: "wi-parent", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+			return &plane.WorkItem{ID: parentID, Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
 		},
 		listProjectsFn: func(ctx context.Context) ([]plane.Project, error) {
 			return []plane.Project{{ID: "proj-uuid", Identifier: "PROJ"}}, nil
 		},
 		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			// Items must carry Parent == parentID so the client-side filter passes them through.
+			p := parentID
 			return []plane.WorkItem{
-				{ID: "wi-1", Name: "Child one", SequenceID: 2, Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}},
-				{ID: "wi-2", Name: "Child two", SequenceID: 3, Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}},
+				{ID: "wi-1", Name: "Child one", SequenceID: 2, Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}, Parent: &p},
+				{ID: "wi-2", Name: "Child two", SequenceID: 3, Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}, Parent: &p},
 			}, nil
 		},
 	}
@@ -8124,5 +7951,435 @@ func TestReportProgress_StateOmitted(t *testing.T) {
 	// Verify that no state transition was attempted — the update function should not be called.
 	if client.updateWorkItemFn != nil {
 		t.Error("UpdateWorkItem should not be called when state is omitted")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AGENT-78 regression: listChildren must return only the children of the
+// given parent, not every item in the project.
+// ---------------------------------------------------------------------------
+
+// TestListChildren_FiltersToParentOnly verifies that when the API returns a mix
+// of work items (including items that belong to a different parent), listChildren
+// only surfaces items whose Parent UUID matches the resolved parent.
+//
+// Arrange: parent item wi-parent; child item wi-child (Parent == "wi-parent");
+//
+//	unrelated item wi-unrelated (Parent == "wi-other").
+//
+// Act:    call listChildren with identifier "PROJ-1".
+// Assert: result contains "PROJ-2" (the child) and does NOT contain "PROJ-3"
+//
+//	(the unrelated item).
+func TestListChildren_FiltersToParentOnly(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	parentID := "wi-parent"
+
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			// Resolves PROJ-1 → the parent item.
+			return &plane.WorkItem{
+				ID:      parentID,
+				Project: plane.Expandable[plane.Project]{ID: "proj-uuid"},
+			}, nil
+		},
+		listProjectsFn: func(ctx context.Context) ([]plane.Project, error) {
+			return []plane.Project{{ID: "proj-uuid", Identifier: "PROJ"}}, nil
+		},
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			// Simulate an API that ignores the parent filter and returns all items.
+			// wi-child belongs to wi-parent; wi-unrelated belongs to a different parent.
+			unrelatedParent := "wi-other"
+			childParent := parentID
+			return []plane.WorkItem{
+				{
+					ID:         "wi-child",
+					Name:       "Child task",
+					SequenceID: 2,
+					Project:    plane.Expandable[plane.Project]{ID: "proj-uuid"},
+					Parent:     &childParent,
+				},
+				{
+					ID:         "wi-unrelated",
+					Name:       "Unrelated task",
+					SequenceID: 3,
+					Project:    plane.Expandable[plane.Project]{ID: "proj-uuid"},
+					Parent:     &unrelatedParent,
+				},
+			}, nil
+		},
+	}
+	args := ListChildrenArgs{Identifier: "PROJ-1"}
+
+	// Act
+	result, err := listChildren(ctx, args, client)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected IsError=false, got error: %+v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+
+	// Child must appear in output.
+	if !strings.Contains(text, "PROJ-2") {
+		t.Errorf("expected child 'PROJ-2' in output, got:\n%s", text)
+	}
+	if !strings.Contains(text, "Child task") {
+		t.Errorf("expected 'Child task' in output, got:\n%s", text)
+	}
+
+	// Unrelated item must NOT appear — this is the regression assertion.
+	if strings.Contains(text, "PROJ-3") {
+		t.Errorf("expected unrelated item 'PROJ-3' to be filtered out, but it appeared in output:\n%s", text)
+	}
+	if strings.Contains(text, "Unrelated task") {
+		t.Errorf("expected 'Unrelated task' to be filtered out, but it appeared in output:\n%s", text)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AGENT-80 regression tests — add_comment HTML pass-through
+// ---------------------------------------------------------------------------
+
+// TestAddComment_RealHTMLPassesThrough — AGENT-80 regression: a body that is already
+// valid HTML must be forwarded as-is, not entity-escaped through the Markdown converter.
+func TestAddComment_RealHTMLPassesThrough(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	workItem := &plane.WorkItem{
+		ID:         "wi-80",
+		SequenceID: 80,
+		Project:    plane.Expandable[plane.Project]{ID: "proj-uuid"},
+	}
+	var capturedComment string
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return workItem, nil
+		},
+		createWorkItemCommentFn: func(ctx context.Context, projectID, itemID, comment string) error {
+			capturedComment = comment
+			return nil
+		},
+	}
+	args := AddCommentArgs{Identifier: "PROJ-80", Body: "<p>This is real HTML</p>"}
+
+	// Act
+	result, err := addComment(ctx, args, client)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	// The HTML must arrive at the client verbatim — NOT entity-escaped.
+	if capturedComment != "<p>This is real HTML</p>" {
+		t.Errorf("capturedComment = %q, want %q (real HTML must not be entity-escaped)", capturedComment, "<p>This is real HTML</p>")
+	}
+}
+
+// TestAddComment_NonTagChevronStillEscaped — AGENT-80 + PR#59 guard: non-tag uses of '<'
+// such as "I <3 this" must still be entity-escaped to prevent XSS injection.
+func TestAddComment_NonTagChevronStillEscaped(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	workItem := &plane.WorkItem{
+		ID:         "wi-81",
+		SequenceID: 81,
+		Project:    plane.Expandable[plane.Project]{ID: "proj-uuid"},
+	}
+	tests := []struct {
+		name    string
+		body    string
+		wantSub string // substring that must appear in the captured comment
+		notSub  string // substring that must NOT appear in the captured comment
+	}{
+		{
+			name:    "heart emoji text",
+			body:    "I <3 this",
+			wantSub: "&lt;3",
+			notSub:  "<3",
+		},
+		{
+			name:    "arrow operator",
+			body:    "arrow <- here",
+			wantSub: "&lt;-",
+			notSub:  "<-",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var capturedComment string
+			client := &mockClient{
+				getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+					return workItem, nil
+				},
+				createWorkItemCommentFn: func(ctx context.Context, projectID, itemID, comment string) error {
+					capturedComment = comment
+					return nil
+				},
+			}
+			args := AddCommentArgs{Identifier: "PROJ-81", Body: tc.body}
+
+			// Act
+			result, err := addComment(ctx, args, client)
+
+			// Assert
+			if err != nil {
+				t.Fatalf("unexpected Go error: %v", err)
+			}
+			if result.IsError {
+				t.Errorf("expected IsError=false: %+v", result.Content)
+			}
+			if !strings.Contains(capturedComment, tc.wantSub) {
+				t.Errorf("capturedComment = %q, want it to contain %q (non-tag '<' must be escaped)", capturedComment, tc.wantSub)
+			}
+			if strings.Contains(capturedComment, tc.notSub) {
+				t.Errorf("capturedComment = %q, must NOT contain %q (raw non-tag '<' must be escaped)", capturedComment, tc.notSub)
+			}
+		})
+	}
+}
+
+// TestAddComment_MarkdownStillConverts — AGENT-80: Markdown must still be converted to HTML
+// correctly (regression guard for the existing happy-path behavior).
+func TestAddComment_MarkdownStillConverts(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	workItem := &plane.WorkItem{
+		ID:         "wi-82",
+		SequenceID: 82,
+		Project:    plane.Expandable[plane.Project]{ID: "proj-uuid"},
+	}
+	var capturedComment string
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return workItem, nil
+		},
+		createWorkItemCommentFn: func(ctx context.Context, projectID, itemID, comment string) error {
+			capturedComment = comment
+			return nil
+		},
+	}
+	args := AddCommentArgs{Identifier: "PROJ-82", Body: "**bold** and *italic*"}
+
+	// Act
+	result, err := addComment(ctx, args, client)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	// Markdown must be converted: **bold** → <strong>bold</strong>, *italic* → <em>italic</em>
+	if !strings.Contains(capturedComment, "<strong>bold</strong>") {
+		t.Errorf("capturedComment = %q, want it to contain <strong>bold</strong>", capturedComment)
+	}
+	if !strings.Contains(capturedComment, "<em>italic</em>") {
+		t.Errorf("capturedComment = %q, want it to contain <em>italic</em>", capturedComment)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AGENT-81 regression tests — get_work_item strict string enum for detail
+// ---------------------------------------------------------------------------
+
+// TestGetWorkItem_DetailEnum_Summary — AGENT-81: "summary" reaches the formatter as "summary".
+func TestGetWorkItem_DetailEnum_Summary(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	workItem := &plane.WorkItem{ID: "wi-81a", Name: "Test", SequenceID: 1}
+	var capturedDetail string
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return workItem, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			capturedDetail = detail
+			return "name: Test\n", nil
+		},
+	}
+	args := GetWorkItemArgs{Identifier: "PROJ-1", Detail: "summary"}
+
+	// Act
+	result, err := getWorkItem(ctx, args, client, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if capturedDetail != "summary" {
+		t.Errorf("detail passed to formatter = %q, want %q", capturedDetail, "summary")
+	}
+}
+
+// TestGetWorkItem_DetailEnum_Full — AGENT-81: "full" reaches the formatter as "full".
+func TestGetWorkItem_DetailEnum_Full(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	workItem := &plane.WorkItem{ID: "wi-81b", Name: "Test", SequenceID: 2}
+	var capturedDetail string
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return workItem, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			capturedDetail = detail
+			return "name: Test\n", nil
+		},
+	}
+	args := GetWorkItemArgs{Identifier: "PROJ-2", Detail: "full"}
+
+	// Act
+	result, err := getWorkItem(ctx, args, client, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if capturedDetail != "full" {
+		t.Errorf("detail passed to formatter = %q, want %q", capturedDetail, "full")
+	}
+}
+
+// TestGetWorkItem_DetailEnum_SummaryWithLabels — AGENT-81: "summary_with_labels" reaches the formatter correctly.
+func TestGetWorkItem_DetailEnum_SummaryWithLabels(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	workItem := &plane.WorkItem{ID: "wi-81c", Name: "Test", SequenceID: 3}
+	var capturedDetail string
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return workItem, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			capturedDetail = detail
+			return "name: Test\n", nil
+		},
+	}
+	args := GetWorkItemArgs{Identifier: "PROJ-3", Detail: "summary_with_labels"}
+
+	// Act
+	result, err := getWorkItem(ctx, args, client, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if capturedDetail != "summary_with_labels" {
+		t.Errorf("detail passed to formatter = %q, want %q", capturedDetail, "summary_with_labels")
+	}
+}
+
+// TestGetWorkItem_DetailEnum_EmptyDefaultsSummary — AGENT-81: empty/omitted detail defaults to "summary".
+func TestGetWorkItem_DetailEnum_EmptyDefaultsSummary(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	workItem := &plane.WorkItem{ID: "wi-81d", Name: "Test", SequenceID: 4}
+	var capturedDetail string
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return workItem, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			capturedDetail = detail
+			return "name: Test\n", nil
+		},
+	}
+	args := GetWorkItemArgs{Identifier: "PROJ-4"} // Detail is zero-value ""
+
+	// Act
+	result, err := getWorkItem(ctx, args, client, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if capturedDetail != "summary" {
+		t.Errorf("detail passed to formatter = %q, want %q (empty should default to summary)", capturedDetail, "summary")
+	}
+}
+
+// TestGetWorkItem_DetailSchema_HasDescriptions — AGENT-81: the detail schema must have
+// descriptions on each enum value (embedded in the property description).
+func TestGetWorkItem_DetailSchema_HasDescription(t *testing.T) {
+	// Arrange
+	schema := getWorkItemInputSchema()
+
+	// Act
+	detailProp, ok := schema.Properties["detail"]
+
+	// Assert
+	if !ok {
+		t.Fatal("schema is missing 'detail' property")
+	}
+	if detailProp.Description == "" {
+		t.Error("detail property must have a Description documenting when to use each enum value")
+	}
+}
+
+// TestGetWorkItem_DetailSchema_Optional is the AGENT-81 follow-up regression. The
+// detail parameter is optional (it defaults to "summary"), so it must NOT appear in
+// the schema's required set. Otherwise the SDK rejects ordinary identifier-only
+// calls with "missing properties: [detail]" before the handler's default applies.
+func TestGetWorkItem_DetailSchema_Optional(t *testing.T) {
+	// Arrange
+	schema := getWorkItemInputSchema()
+
+	// Assert: identifier required, detail not.
+	for _, name := range schema.Required {
+		if name == "detail" {
+			t.Errorf("'detail' must not be required; required=%v", schema.Required)
+		}
+	}
+	var hasIdentifier bool
+	for _, name := range schema.Required {
+		if name == "identifier" {
+			hasIdentifier = true
+		}
+	}
+	if !hasIdentifier {
+		t.Errorf("'identifier' must remain required; required=%v", schema.Required)
+	}
+
+	// Act + Assert: a resolved schema must accept an identifier-only instance
+	// (detail omitted) and still reject an out-of-enum detail value.
+	resolved, err := schema.Resolve(nil)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if err := resolved.Validate(map[string]any{"identifier": "PROJ-1"}); err != nil {
+		t.Errorf("identifier-only call must validate (detail is optional), got: %v", err)
+	}
+	if err := resolved.Validate(map[string]any{"identifier": "PROJ-1", "detail": "verbose"}); err == nil {
+		t.Error("an out-of-enum detail value must be rejected by validation")
 	}
 }
