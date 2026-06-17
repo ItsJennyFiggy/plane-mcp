@@ -442,11 +442,16 @@ func (c *Client) UpdateWorkItem(ctx context.Context, projectID, workItemID strin
 
 // CreateWorkItemComment posts a comment on a work item.
 // Path: POST /api/v1/workspaces/{slug}/projects/{projectID}/work-items/{workItemID}/comments/
-// The text is wrapped in <p>...</p> for the comment_html field.
+// If text already looks like HTML (starts with '<' after trimming whitespace), it is used directly;
+// otherwise it is wrapped in <p>...</p> for the comment_html field.
 func (c *Client) CreateWorkItemComment(ctx context.Context, projectID, workItemID, text string) error {
 	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/work-items/%s/comments/", c.WorkspaceSlug, projectID, workItemID)
+	commentHTML := text
+	if !strings.HasPrefix(strings.TrimSpace(text), "<") {
+		commentHTML = "<p>" + text + "</p>"
+	}
 	body := map[string]any{
-		"comment_html": "<p>" + text + "</p>",
+		"comment_html": commentHTML,
 	}
 	return c.request(ctx, "POST", path, nil, body, nil)
 }
