@@ -1542,10 +1542,7 @@ func addLabel(ctx context.Context, args AddLabelArgs, client planeClient, resolv
 		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
 	}
 
-	projectID := item.Project.ID
-	if item.Project.Val != nil {
-		projectID = item.Project.Val.ID
-	}
+	projectID := getProjectID(item.Project)
 
 	label, err := resolver.ResolveLabel(ctx, projectID, args.Label)
 	if err != nil {
@@ -1577,10 +1574,7 @@ func removeLabel(ctx context.Context, args RemoveLabelArgs, client planeClient, 
 		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
 	}
 
-	projectID := item.Project.ID
-	if item.Project.Val != nil {
-		projectID = item.Project.Val.ID
-	}
+	projectID := getProjectID(item.Project)
 
 	label, err := resolver.ResolveLabel(ctx, projectID, args.Label)
 	if err != nil {
@@ -1636,10 +1630,7 @@ func assignWorkItem(ctx context.Context, args AssignWorkItemArgs, client planeCl
 		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
 	}
 
-	projectID := item.Project.ID
-	if item.Project.Val != nil {
-		projectID = item.Project.Val.ID
-	}
+	projectID := getProjectID(item.Project)
 
 	// Resolve all new assignees up front.
 	var resolved []plane.Member
@@ -1910,10 +1901,7 @@ func updateWorkItem(ctx context.Context, args UpdateWorkItemArgs, client planeCl
 		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
 	}
 
-	projectID := item.Project.ID
-	if item.Project.Val != nil {
-		projectID = item.Project.Val.ID
-	}
+	projectID := getProjectID(item.Project)
 
 	body := map[string]any{}
 
