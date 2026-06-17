@@ -352,9 +352,9 @@ type GetWorkItemArgs struct {
 
 // ReportProgressArgs are the arguments for the report_progress tool.
 type ReportProgressArgs struct {
-	Identifier string `json:"identifier"`
-	Comment    string `json:"comment"`
-	State      string `json:"state"`
+	Identifier string  `json:"identifier"`
+	Comment    string  `json:"comment"`
+	State      *string `json:"state,omitempty"`
 }
 
 // SubmitForReviewArgs are the arguments for the submit_for_review tool.
@@ -362,6 +362,12 @@ type SubmitForReviewArgs struct {
 	Identifier string `json:"identifier"`
 	PRURL      string `json:"pr_url"`
 	Comment    string `json:"comment"`
+}
+
+// AddCommentArgs are the arguments for the add_comment tool.
+type AddCommentArgs struct {
+	Identifier string `json:"identifier"`
+	Body       string `json:"body"`
 }
 
 // SetRelationArgs are the arguments for the set_relation tool.
@@ -762,10 +768,10 @@ func reportProgress(ctx context.Context, args ReportProgressArgs, client planeCl
 		}
 	}
 
-	if args.State != "" {
-		state, err := resolver.ResolveState(ctx, projectID, args.State)
+	if args.State != nil && *args.State != "" {
+		state, err := resolver.ResolveState(ctx, projectID, *args.State)
 		if err != nil {
-			return toolError(fmt.Sprintf("failed to resolve state %q: %v", args.State, err)), nil
+			return toolError(fmt.Sprintf("failed to resolve state %q: %v", *args.State, err)), nil
 		}
 		if _, err := client.UpdateWorkItem(ctx, projectID, item.ID, map[string]any{"state": state.ID}); err != nil {
 			return toolError(fmt.Sprintf("failed to update work item state: %v", err)), nil
@@ -774,6 +780,28 @@ func reportProgress(ctx context.Context, args ReportProgressArgs, client planeCl
 	}
 
 	return toolText(fmt.Sprintf("Progress reported on %s.", args.Identifier)), nil
+}
+
+// addComment implements the add_comment tool logic.
+func addComment(ctx context.Context, args AddCommentArgs, client planeClient) (*mcp.CallToolResult, error) {
+	projIdentifier, seqID, err := parseIdentifier(args.Identifier)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+
+	item, err := client.GetWorkItemByIdentifier(ctx, projIdentifier, seqID)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
+	}
+
+	projectID := item.Project.ID
+
+	commentHTML := convertDescriptionToHTML(args.Body)
+	if err := client.CreateWorkItemComment(ctx, projectID, item.ID, commentHTML); err != nil {
+		return toolError(fmt.Sprintf("failed to add comment: %v", err)), nil
+	}
+
+	return toolText(fmt.Sprintf("Comment added to %s.", args.Identifier)), nil
 }
 
 // submitForReview implements the submit_for_review tool logic.
@@ -2046,6 +2074,17 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, IdempotentHint: true},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args ReportProgressArgs) (*mcp.CallToolResult, any, error) {
 			result, err := reportProgress(ctx, args, client, resolver)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("add_comment", workerPlannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "add_comment",
+			Description: "Add a comment to a work item by its project-prefixed identifier (e.g. PROJ-123). The body accepts Markdown and is converted to Plane-native rich text.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, IdempotentHint: false},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args AddCommentArgs) (*mcp.CallToolResult, any, error) {
+			result, err := addComment(ctx, args, client)
 			return result, nil, err
 		})
 	}

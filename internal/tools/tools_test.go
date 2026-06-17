@@ -806,7 +806,7 @@ func TestReportProgress_WithStateUpdate(t *testing.T) {
 	args := ReportProgressArgs{
 		Identifier: "PROJ-5",
 		Comment:    "making progress",
-		State:      "In Progress",
+		State:      strPtr("In Progress"),
 	}
 
 	// Act
@@ -1449,7 +1449,7 @@ func TestReportProgress_StateResolveError(t *testing.T) {
 			return nil, errors.New("state not found: Done")
 		},
 	}
-	args := ReportProgressArgs{Identifier: "PROJ-1", State: "Done"}
+	args := ReportProgressArgs{Identifier: "PROJ-1", State: strPtr("Done")}
 
 	// Act
 	result, err := reportProgress(ctx, args, client, resolver)
@@ -1485,7 +1485,7 @@ func TestReportProgress_UpdateError(t *testing.T) {
 			return &plane.State{ID: "state-uuid", Name: "Done"}, nil
 		},
 	}
-	args := ReportProgressArgs{Identifier: "PROJ-1", State: "Done"}
+	args := ReportProgressArgs{Identifier: "PROJ-1", State: strPtr("Done")}
 
 	// Act
 	result, err := reportProgress(ctx, args, client, resolver)
@@ -7487,5 +7487,161 @@ func TestMoveWorkItem_DeleteOriginalTrue_DeleteFails(t *testing.T) {
 	tc := result.Content[0].(*mcp.TextContent)
 	if !strings.Contains(tc.Text, "failed to delete original") {
 		t.Errorf("expected warning about delete failure, got: %s", tc.Text)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// add_comment handler tests added by AGENT-52
+// ---------------------------------------------------------------------------
+
+// TestAddComment_Success — happy path: markdown body is converted to HTML and posted.
+func TestAddComment_Success(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	workItem := &plane.WorkItem{
+		ID:         "wi-1",
+		SequenceID: 1,
+		Project:    plane.Expandable[plane.Project]{ID: "proj-uuid"},
+	}
+	var capturedComment string
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return workItem, nil
+		},
+		createWorkItemCommentFn: func(ctx context.Context, projectID, itemID, comment string) error {
+			capturedComment = comment
+			return nil
+		},
+	}
+	args := AddCommentArgs{Identifier: "PROJ-1", Body: "**bold** and `code`"}
+
+	// Act
+	result, err := addComment(ctx, args, client)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	// Verify the body was converted from Markdown to HTML.
+	wantHTML := "<p><strong>bold</strong> and <code>code</code></p>"
+	if capturedComment != wantHTML {
+		t.Errorf("capturedComment = %q, want %q", capturedComment, wantHTML)
+	}
+}
+
+// TestAddComment_InvalidIdentifier — error path for bad identifier.
+func TestAddComment_InvalidIdentifier(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	client := &mockClient{}
+	args := AddCommentArgs{Identifier: "BAD"}
+
+	// Act
+	result, err := addComment(ctx, args, client)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for invalid identifier")
+	}
+}
+
+// TestAddComment_WorkItemFetchError — client error surfaced as tool error.
+func TestAddComment_WorkItemFetchError(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return nil, errors.New("item not found")
+		},
+	}
+	args := AddCommentArgs{Identifier: "PROJ-1", Body: "comment"}
+
+	// Act
+	result, err := addComment(ctx, args, client)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when work item fetch fails")
+	}
+}
+
+// TestAddComment_CommentError — comment creation failure surfaced.
+func TestAddComment_CommentError(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	workItem := &plane.WorkItem{
+		ID:         "wi-1",
+		SequenceID: 1,
+		Project:    plane.Expandable[plane.Project]{ID: "proj-uuid"},
+	}
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return workItem, nil
+		},
+		createWorkItemCommentFn: func(ctx context.Context, projectID, itemID, comment string) error {
+			return errors.New("comment failed")
+		},
+	}
+	args := AddCommentArgs{Identifier: "PROJ-1", Body: "comment"}
+
+	// Act
+	result, err := addComment(ctx, args, client)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true when comment creation fails")
+	}
+}
+
+// TestReportProgress_StateOmitted — success when state is omitted (nil) but comment is provided.
+func TestReportProgress_StateOmitted(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	workItem := &plane.WorkItem{
+		ID:         "wi-1",
+		SequenceID: 8,
+		Project:    plane.Expandable[plane.Project]{ID: "proj-uuid"},
+	}
+	var capturedComment string
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return workItem, nil
+		},
+		createWorkItemCommentFn: func(ctx context.Context, projectID, itemID, comment string) error {
+			capturedComment = comment
+			return nil
+		},
+	}
+	resolver := &mockResolver{}
+	args := ReportProgressArgs{Identifier: "PROJ-8", Comment: "still working"} // State is nil
+
+	// Act
+	result, err := reportProgress(ctx, args, client, resolver)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if capturedComment == "" {
+		t.Error("expected comment to be posted when state is omitted")
+	}
+	// Verify that no state transition was attempted — the update function should not be called.
+	if client.updateWorkItemFn != nil {
+		t.Error("UpdateWorkItem should not be called when state is omitted")
 	}
 }
