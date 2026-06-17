@@ -355,8 +355,8 @@ type FindMyWorkArgs struct {
 
 // GetWorkItemArgs are the arguments for the get_work_item tool.
 type GetWorkItemArgs struct {
-	Identifier string `json:"identifier"`
-	Detail     string `json:"detail"`
+	Identifier string         `json:"identifier"`
+	Detail     FlexibleDetail `json:"detail"`
 }
 
 // ReportProgressArgs are the arguments for the report_progress tool.
@@ -455,6 +455,68 @@ func (s *FlexibleStringSlice) UnmarshalJSON(data []byte) error {
 	}
 	*s = FlexibleStringSlice(out)
 	return nil
+}
+
+// FlexibleDetail is a string that unmarshals from either a JSON string or a
+// JSON boolean, providing parsing fallbacks for the get_work_item detail
+// parameter. Boolean true maps to "full", false maps to "summary".
+// Unrecognized string values silently default to "summary".
+type FlexibleDetail string
+
+// Valid detail levels.
+const (
+	DetailSummary          FlexibleDetail = "summary"
+	DetailFull             FlexibleDetail = "full"
+	DetailSummaryWithLabels FlexibleDetail = "summary_with_labels"
+)
+
+// UnmarshalJSON implements json.Unmarshaler so FlexibleDetail accepts:
+//   - a JSON boolean: true → "full", false → "summary"
+//   - a JSON string: normalised (case-folded, trimmed) and mapped to a valid
+//     detail level; "true" → "full", "false" → "summary", unrecognised → "summary"
+//   - null / empty → "summary"
+func (d *FlexibleDetail) UnmarshalJSON(data []byte) error {
+	raw := bytes.TrimSpace(data)
+
+	// JSON null or empty
+	if len(raw) == 0 || string(raw) == "null" {
+		*d = DetailSummary
+		return nil
+	}
+
+	// Try boolean first
+	if string(raw) == "true" {
+		*d = DetailFull
+		return nil
+	}
+	if string(raw) == "false" {
+		*d = DetailSummary
+		return nil
+	}
+
+	// Try string
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		// Not a valid JSON value — default to summary.
+		*d = DetailSummary
+		return nil
+	}
+
+	*d = normalizeDetail(s)
+	return nil
+}
+
+// normalizeDetail folds a string detail value to a recognised constant.
+func normalizeDetail(s string) FlexibleDetail {
+	s = strings.TrimSpace(s)
+	switch strings.ToLower(s) {
+	case "full", "true":
+		return DetailFull
+	case "summary_with_labels", "summary-with-labels":
+		return DetailSummaryWithLabels
+	default:
+		return DetailSummary
+	}
 }
 
 // ListProjectsArgs are the arguments for the list_projects tool.
@@ -666,10 +728,10 @@ func getWorkItem(ctx context.Context, args GetWorkItemArgs, client planeClient, 
 
 	detail := args.Detail
 	if detail == "" {
-		detail = "summary"
+		detail = DetailSummary
 	}
 
-	yaml, err := formatter.FormatWorkItemYAML(ctx, item, detail)
+	yaml, err := formatter.FormatWorkItemYAML(ctx, item, string(detail))
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to format work item: %v", err)), nil
 	}
@@ -1999,6 +2061,22 @@ func listWorkItemsInputSchema() *jsonschema.Schema {
 	return schema
 }
 
+// getWorkItemInputSchema builds the JSON Schema for the get_work_item tool.
+// It constrains detail to the three valid enum values.
+func getWorkItemInputSchema() *jsonschema.Schema {
+	schema, err := jsonschema.For[GetWorkItemArgs](nil)
+	if err != nil {
+		panic(fmt.Sprintf("get_work_item: failed to build input schema: %v", err))
+	}
+	// Constrain detail to the valid enum values.
+	for name, prop := range schema.Properties {
+		if name == "detail" {
+			prop.Enum = []any{"summary", "full", "summary_with_labels"}
+		}
+	}
+	return schema
+}
+
 // ---------------------------------------------------------------------------
 // Register — wires up all five tools to the MCP server
 // ---------------------------------------------------------------------------
@@ -2104,6 +2182,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "get_work_item",
 			Description: "Retrieve a single work item by its project-prefixed identifier (e.g. PROJ-123).",
+			InputSchema: getWorkItemInputSchema(),
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args GetWorkItemArgs) (*mcp.CallToolResult, any, error) {
 			result, err := getWorkItem(ctx, args, client, formatter)
