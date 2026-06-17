@@ -1860,6 +1860,196 @@ func TestGetWorkItem_FormatError(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// FlexibleDetail unmarshaling tests
+// ---------------------------------------------------------------------------
+
+func TestFlexibleDetail_UnmarshalJSON_BoolTrue(t *testing.T) {
+	var d FlexibleDetail
+	if err := json.Unmarshal([]byte("true"), &d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d != DetailFull {
+		t.Errorf("expected 'full', got %q", d)
+	}
+}
+
+func TestFlexibleDetail_UnmarshalJSON_BoolFalse(t *testing.T) {
+	var d FlexibleDetail
+	if err := json.Unmarshal([]byte("false"), &d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d != DetailSummary {
+		t.Errorf("expected 'summary', got %q", d)
+	}
+}
+
+func TestFlexibleDetail_UnmarshalJSON_StringFull(t *testing.T) {
+	var d FlexibleDetail
+	if err := json.Unmarshal([]byte(`"full"`), &d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d != DetailFull {
+		t.Errorf("expected 'full', got %q", d)
+	}
+}
+
+func TestFlexibleDetail_UnmarshalJSON_StringSummary(t *testing.T) {
+	var d FlexibleDetail
+	if err := json.Unmarshal([]byte(`"summary"`), &d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d != DetailSummary {
+		t.Errorf("expected 'summary', got %q", d)
+	}
+}
+
+func TestFlexibleDetail_UnmarshalJSON_StringSummaryWithLabels(t *testing.T) {
+	var d FlexibleDetail
+	if err := json.Unmarshal([]byte(`"summary_with_labels"`), &d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d != DetailSummaryWithLabels {
+		t.Errorf("expected 'summary_with_labels', got %q", d)
+	}
+}
+
+func TestFlexibleDetail_UnmarshalJSON_StringTrueMapsToFull(t *testing.T) {
+	var d FlexibleDetail
+	if err := json.Unmarshal([]byte(`"true"`), &d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d != DetailFull {
+		t.Errorf("expected 'full' for string 'true', got %q", d)
+	}
+}
+
+func TestFlexibleDetail_UnmarshalJSON_StringFalseMapsToSummary(t *testing.T) {
+	var d FlexibleDetail
+	if err := json.Unmarshal([]byte(`"false"`), &d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d != DetailSummary {
+		t.Errorf("expected 'summary' for string 'false', got %q", d)
+	}
+}
+
+func TestFlexibleDetail_UnmarshalJSON_CaseInsensitive(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected FlexibleDetail
+	}{
+		{`"FULL"`, DetailFull},
+		{`"Full"`, DetailFull},
+		{`"SUMMARY"`, DetailSummary},
+		{`"Summary"`, DetailSummary},
+		{`"SUMMARY_WITH_LABELS"`, DetailSummaryWithLabels},
+		{`"Summary_With_Labels"`, DetailSummaryWithLabels},
+	}
+	for _, tc := range tests {
+		var d FlexibleDetail
+		if err := json.Unmarshal([]byte(tc.input), &d); err != nil {
+			t.Errorf("input %s: unexpected error: %v", tc.input, err)
+			continue
+		}
+		if d != tc.expected {
+			t.Errorf("input %s: expected %q, got %q", tc.input, tc.expected, d)
+		}
+	}
+}
+
+func TestFlexibleDetail_UnmarshalJSON_WhitespaceTrimmed(t *testing.T) {
+	var d FlexibleDetail
+	if err := json.Unmarshal([]byte(`"  full  "`), &d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d != DetailFull {
+		t.Errorf("expected 'full' after trimming, got %q", d)
+	}
+}
+
+func TestFlexibleDetail_UnmarshalJSON_UnrecognizedDefaultsToSummary(t *testing.T) {
+	tests := []string{`"all"`, `"everything"`, `"detailed"`, `"unknown"`}
+	for _, input := range tests {
+		var d FlexibleDetail
+		if err := json.Unmarshal([]byte(input), &d); err != nil {
+			t.Errorf("input %s: unexpected error: %v", input, err)
+			continue
+		}
+		if d != DetailSummary {
+			t.Errorf("input %s: expected 'summary' (default), got %q", input, d)
+		}
+	}
+}
+
+func TestFlexibleDetail_UnmarshalJSON_Null(t *testing.T) {
+	var d FlexibleDetail
+	if err := json.Unmarshal([]byte("null"), &d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d != DetailSummary {
+		t.Errorf("expected 'summary' for null, got %q", d)
+	}
+}
+
+func TestFlexibleDetail_UnmarshalJSON_EmptyString(t *testing.T) {
+	var d FlexibleDetail
+	if err := json.Unmarshal([]byte(`""`), &d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d != DetailSummary {
+		t.Errorf("expected 'summary' for empty string, got %q", d)
+	}
+}
+
+func TestFlexibleDetail_UnmarshalJSON_SummaryWithLabelsHyphenVariant(t *testing.T) {
+	var d FlexibleDetail
+	if err := json.Unmarshal([]byte(`"summary-with-labels"`), &d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d != DetailSummaryWithLabels {
+		t.Errorf("expected 'summary_with_labels' for hyphen variant, got %q", d)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// getWorkItem detail normalisation integration tests
+// ---------------------------------------------------------------------------
+
+// TestGetWorkItem_DetailPassedToFormatter verifies that a non-default
+// FlexibleDetail (DetailFull) reaches the formatter as the normalised
+// string "full" when set directly on the args struct (the handler-level
+// path, complementing the UnmarshalJSON unit tests).
+func TestGetWorkItem_DetailPassedToFormatter(t *testing.T) {
+	ctx := context.Background()
+	workItem := &plane.WorkItem{ID: "wi-1", Name: "Test", SequenceID: 1}
+	var capturedDetail string
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return workItem, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			capturedDetail = detail
+			return "name: Test\n", nil
+		},
+	}
+	// Set DetailFull explicitly — the handler should cast it to "full" for the formatter.
+	args := GetWorkItemArgs{Identifier: "PROJ-1", Detail: DetailFull}
+
+	result, err := getWorkItem(ctx, args, client, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Error("expected IsError=false")
+	}
+	if capturedDetail != "full" {
+		t.Errorf("expected detail='full', got %q", capturedDetail)
+	}
+}
+
 // TestFindMyWork_FormatterError — formatter failure on items found.
 func TestFindMyWork_FormatterError(t *testing.T) {
 	// Arrange
@@ -2424,6 +2614,42 @@ func TestCreateTask_SchemaRequiredList(t *testing.T) {
 				t.Errorf("%q should be optional but is in required list", opt)
 			}
 		}
+	}
+}
+
+// TestGetWorkItem_SchemaDetailEnum — verifies the detail parameter has the
+// correct enum constraint in the generated JSON Schema.
+func TestGetWorkItem_SchemaDetailEnum(t *testing.T) {
+	schema := getWorkItemInputSchema()
+
+	detailProp, ok := schema.Properties["detail"]
+	if !ok {
+		t.Fatal("schema is missing 'detail' property")
+	}
+
+	if len(detailProp.Enum) != 3 {
+		t.Fatalf("expected 3 enum values, got %d: %v", len(detailProp.Enum), detailProp.Enum)
+	}
+
+	expectedEnum := map[string]bool{
+		"summary":             true,
+		"full":                true,
+		"summary_with_labels": true,
+	}
+	for _, e := range detailProp.Enum {
+		s, ok := e.(string)
+		if !ok {
+			t.Errorf("enum value %v is not a string", e)
+			continue
+		}
+		if expectedEnum[s] {
+			delete(expectedEnum, s)
+		} else {
+			t.Errorf("unexpected enum value: %q", s)
+		}
+	}
+	for s := range expectedEnum {
+		t.Errorf("missing enum value: %q", s)
 	}
 }
 
@@ -7115,11 +7341,11 @@ func TestMoveWorkItem_SourceItemNotFound(t *testing.T) {
 func TestMoveWorkItem_TargetCreationError(t *testing.T) {
 	ctx := context.Background()
 	srcItem := &plane.WorkItem{
-		ID:       "src-wi",
-		Name:     "Test Item",
+		ID:         "src-wi",
+		Name:       "Test Item",
 		SequenceID: 1,
-		Project:  plane.Expandable[plane.Project]{ID: "src-proj"},
-		State:    plane.Expandable[plane.State]{ID: "state-1", Val: &plane.State{Name: "Todo", Group: "unstarted"}},
+		Project:    plane.Expandable[plane.Project]{ID: "src-proj"},
+		State:      plane.Expandable[plane.State]{ID: "state-1", Val: &plane.State{Name: "Todo", Group: "unstarted"}},
 	}
 	client := &mockClient{
 		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
