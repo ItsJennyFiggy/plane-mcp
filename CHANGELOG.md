@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.12.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.11.1...v1.12.0) (2026-06-17)
+
+
+### Features
+
+* add add_comment tool and make report_progress state optional (AGENT-52) ([#52](https://github.com/ItsJennyFiggy/plane-mcp/issues/52)) ([534135b](https://github.com/ItsJennyFiggy/plane-mcp/commit/534135bed2ab1013da9f10ca93c0b24f7a3654d7))
+* add update_work_item tool (AGENT-51) ([#47](https://github.com/ItsJennyFiggy/plane-mcp/issues/47)) ([3bf67bb](https://github.com/ItsJennyFiggy/plane-mcp/commit/3bf67bb1f2a45e125186740f1a42454955e59bb3))
+* **agent-41:** add relations management tools (set_relation, remove_relation, list_relations) ([#49](https://github.com/ItsJennyFiggy/plane-mcp/issues/49)) ([f67387a](https://github.com/ItsJennyFiggy/plane-mcp/commit/f67387a51e56753562cfa42736689fff8a848e73))
+* **agent-68:** add parent/sub-issue management tools (set_parent, clear_parent, list_children) ([#50](https://github.com/ItsJennyFiggy/plane-mcp/issues/50)) ([706f58e](https://github.com/ItsJennyFiggy/plane-mcp/commit/706f58e2f657ca3f578df2fd4ff0024b2d3abb10))
+* **ci:** modernize release workflows with goreleaser, ko, and golangci-lint ([#62](https://github.com/ItsJennyFiggy/plane-mcp/issues/62)) ([8a82d19](https://github.com/ItsJennyFiggy/plane-mcp/commit/8a82d19e380e8bb5b5ec462296c8517b8f6fa2a4))
+* implement move_work_item tool (AGENT-48) ([#51](https://github.com/ItsJennyFiggy/plane-mcp/issues/51)) ([553ad17](https://github.com/ItsJennyFiggy/plane-mcp/commit/553ad173e1413c9561a0f54788bd8487cbbfcd9f))
+* **tools:** add FlexibleDetail type and schema for get_work_item detail parameter ([#60](https://github.com/ItsJennyFiggy/plane-mcp/issues/60)) ([1ae0559](https://github.com/ItsJennyFiggy/plane-mcp/commit/1ae05598ee8224d9cf1f11ebf3a28134ba73c2ae))
+
+
+### Bug Fixes
+
+* apply state_group filter client-side in list_work_items ([#53](https://github.com/ItsJennyFiggy/plane-mcp/issues/53)) ([76b5b7b](https://github.com/ItsJennyFiggy/plane-mcp/commit/76b5b7b7460decff7a81ab5d5cb37f0aa7841fc0))
+* **plane-mcp:** AGENT-78/79/80/81 — v1.12 pre-release bug fixes ([#63](https://github.com/ItsJennyFiggy/plane-mcp/issues/63)) ([63d0cf2](https://github.com/ItsJennyFiggy/plane-mcp/commit/63d0cf2aba8491c592a4f900aed32a6f94554c11))
+* post-merge cleanup and robustness fixes (Group 2) ([#57](https://github.com/ItsJennyFiggy/plane-mcp/issues/57)) ([110f8a2](https://github.com/ItsJennyFiggy/plane-mcp/commit/110f8a2380796467ddbc7e180fdadd687133c078))
+* post-merge code review fixes (Batch C) ([#54](https://github.com/ItsJennyFiggy/plane-mcp/issues/54)) ([def0f8e](https://github.com/ItsJennyFiggy/plane-mcp/commit/def0f8efa47f98ef1c667095b5618ebebbf18ca7))
+* post-merge safety and stability fixes (Group 1) ([#56](https://github.com/ItsJennyFiggy/plane-mcp/issues/56)) ([fa67973](https://github.com/ItsJennyFiggy/plane-mcp/commit/fa67973d43ccaf9b944e16399c749f0da41a0495))
+
 ## [1.11.1](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.11.0...v1.11.1) (2026-06-16)
 
 
