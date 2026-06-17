@@ -1324,6 +1324,7 @@ func moveWorkItem(ctx context.Context, args MoveWorkItemArgs, client planeClient
 		for _, w := range warnings {
 			resultText += fmt.Sprintf("- %s\n", w)
 		}
+		resultText += "Please manually verify the original work item state and delete/link it if necessary.\n"
 	}
 
 	return toolText(resultText), nil
