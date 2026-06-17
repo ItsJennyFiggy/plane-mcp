@@ -55,15 +55,15 @@ func getConverter() *converter.Converter {
 							if val, ok := dom.GetAttribute(child, "data-checked"); ok && val == "true" {
 								checked = true
 							}
-							w.WriteString("- [")
+							_, _ = w.WriteString("- [")
 							if checked {
-								w.WriteString("x")
+								_, _ = w.WriteString("x")
 							} else {
-								w.WriteString(" ")
+								_, _ = w.WriteString(" ")
 							}
-							w.WriteString("] ")
-							w.WriteString(strings.TrimSpace(dom.CollectText(child)))
-							w.WriteString("\n")
+							_, _ = w.WriteString("] ")
+							_, _ = w.WriteString(strings.TrimSpace(dom.CollectText(child)))
+							_, _ = w.WriteString("\n")
 						}
 					}
 					return converter.RenderSuccess

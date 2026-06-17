@@ -979,7 +979,7 @@ func listRelations(ctx context.Context, args ListRelationsArgs, client planeClie
 	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("relations for %s:\n", args.Identifier))
+	fmt.Fprintf(&b, "relations for %s:\n", args.Identifier)
 
 	for _, g := range groups {
 		if len(g.Items) == 0 {
@@ -1772,9 +1772,7 @@ func listWorkItems(ctx context.Context, args ListWorkItemsArgs, client planeClie
 	maxItems := 1000
 	if filterByStateGroup {
 		params["limit"] = strconv.Itoa(maxItems)
-		if args.Limit != nil && *args.Limit > 0 {
-			// Limit is applied AFTER client-side filtering (see below).
-		}
+		// If args.Limit is set, it is applied AFTER client-side filtering (see below).
 	} else {
 		if args.Limit != nil && *args.Limit > 0 {
 			params["limit"] = strconv.Itoa(*args.Limit)

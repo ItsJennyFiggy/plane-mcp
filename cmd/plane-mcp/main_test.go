@@ -30,6 +30,7 @@ func TestServerStubToolRegistration(t *testing.T) {
 	go func() {
 		if err := server.Run(ctx, serverTransport); err != nil {
 			// ignore context cancelled error which is expected
+			_ = err
 		}
 	}()
 
