@@ -163,7 +163,8 @@ func TestClientPagination(t *testing.T) {
 		requestCount++
 
 		var body string
-		if requestCount == 1 {
+		switch requestCount {
+		case 1:
 			// First page: return next_cursor and 2 items
 			if req.URL.Query().Get("cursor") != "" {
 				t.Errorf("did not expect cursor on first page, got '%s'", req.URL.Query().Get("cursor"))
@@ -176,7 +177,7 @@ func TestClientPagination(t *testing.T) {
 				"next_cursor": "page-2-cursor",
 				"next_page_results": true
 			}`
-		} else if requestCount == 2 {
+		case 2:
 			// Second page: return final 1 item, no next_cursor
 			if req.URL.Query().Get("cursor") != "page-2-cursor" {
 				t.Errorf("expected cursor 'page-2-cursor', got '%s'", req.URL.Query().Get("cursor"))
@@ -188,7 +189,7 @@ func TestClientPagination(t *testing.T) {
 				"next_cursor": "",
 				"next_page_results": false
 			}`
-		} else {
+		default:
 			t.Errorf("unexpected request count: %d", requestCount)
 		}
 
@@ -664,8 +665,8 @@ func TestClientCreateWorkItemComment(t *testing.T) {
 
 	t.Run("Non-HTML text starting with < gets wrapped in <p>", func(t *testing.T) {
 		testCases := []struct {
-			name string
-			text string
+			name         string
+			text         string
 			expectedHTML string
 		}{
 			{"arrow text", "<- check this out", "<p><- check this out</p>"},

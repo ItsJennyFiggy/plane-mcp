@@ -446,27 +446,27 @@ func (r *Resolver) ResolveMember(ctx context.Context, input string) (*Member, er
 
 // ResolvedWorkItem represents a WorkItem but with fully resolved names instead of UUID strings
 type ResolvedWorkItem struct {
-	ID                  string    `json:"id"`
-	Name                string    `json:"name"`
-	DescriptionHTML     string    `json:"description_html,omitempty"`
-	DescriptionStripped string    `json:"description_stripped,omitempty"`
-	Priority            string    `json:"priority,omitempty"`
-	StartDate           string    `json:"start_date,omitempty"`
-	TargetDate          string    `json:"target_date,omitempty"`
-	SequenceID          int       `json:"sequence_id"`
-	SortOrder           float64   `json:"sort_order"`
-	CompletedAt         string    `json:"completed_at,omitempty"`
-	ArchivedAt          string    `json:"archived_at,omitempty"`
-	IsDraft             bool      `json:"is_draft"`
-	ProjectName         string    `json:"project_name"`
-	ProjectIdentifier   string    `json:"project_identifier"`
-	ProjectID           string    `json:"project_id"`
-	StateName           string    `json:"state_name"`
-	StateGroup          string    `json:"state_group"`
-	StateID             string    `json:"state_id"`
-	AssigneeNames       []string  `json:"assignee_names"`
-	AssigneeEmails      []string  `json:"assignee_emails"`
-	LabelNames          []string  `json:"label_names"`
+	ID                  string   `json:"id"`
+	Name                string   `json:"name"`
+	DescriptionHTML     string   `json:"description_html,omitempty"`
+	DescriptionStripped string   `json:"description_stripped,omitempty"`
+	Priority            string   `json:"priority,omitempty"`
+	StartDate           string   `json:"start_date,omitempty"`
+	TargetDate          string   `json:"target_date,omitempty"`
+	SequenceID          int      `json:"sequence_id"`
+	SortOrder           float64  `json:"sort_order"`
+	CompletedAt         string   `json:"completed_at,omitempty"`
+	ArchivedAt          string   `json:"archived_at,omitempty"`
+	IsDraft             bool     `json:"is_draft"`
+	ProjectName         string   `json:"project_name"`
+	ProjectIdentifier   string   `json:"project_identifier"`
+	ProjectID           string   `json:"project_id"`
+	StateName           string   `json:"state_name"`
+	StateGroup          string   `json:"state_group"`
+	StateID             string   `json:"state_id"`
+	AssigneeNames       []string `json:"assignee_names"`
+	AssigneeEmails      []string `json:"assignee_emails"`
+	LabelNames          []string `json:"label_names"`
 }
 
 // ResolveWorkItem maps all UUID references inside a WorkItem to their human-readable name counterparts.

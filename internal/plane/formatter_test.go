@@ -156,20 +156,20 @@ func TestFormatWorkItemYAML(t *testing.T) {
 	itemType := "feature"
 
 	item := &WorkItem{
-		ID:                  "wi-123",
-		Name:                "Test task",
-		DescriptionHTML:     "<p>Some <strong>rich</strong> details</p>",
-		Priority:            "high",
-		StartDate:           "2026-06-13",
-		TargetDate:          "2026-06-20",
-		SequenceID:          42,
-		Project:             Expandable[Project]{ID: projUUID1},
-		State:               Expandable[State]{ID: stateUUID1},
-		Assignees:           []Expandable[Member]{{ID: userUUID1}},
-		Labels:              []Expandable[Label]{{ID: labelUUID1}},
-		Parent:              &parentID,
-		EstimatePoint:       &estimatePoint,
-		Type:                &itemType,
+		ID:              "wi-123",
+		Name:            "Test task",
+		DescriptionHTML: "<p>Some <strong>rich</strong> details</p>",
+		Priority:        "high",
+		StartDate:       "2026-06-13",
+		TargetDate:      "2026-06-20",
+		SequenceID:      42,
+		Project:         Expandable[Project]{ID: projUUID1},
+		State:           Expandable[State]{ID: stateUUID1},
+		Assignees:       []Expandable[Member]{{ID: userUUID1}},
+		Labels:          []Expandable[Label]{{ID: labelUUID1}},
+		Parent:          &parentID,
+		EstimatePoint:   &estimatePoint,
+		Type:            &itemType,
 	}
 
 	t.Run("Summary Mode", func(t *testing.T) {
