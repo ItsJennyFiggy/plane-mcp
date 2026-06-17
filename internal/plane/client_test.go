@@ -1470,7 +1470,9 @@ func TestClientRemoveWorkItemRelation(t *testing.T) {
 	t.Run("Happy path posts removal", func(t *testing.T) {
 		client := NewClient(cfg)
 		client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
-			expectedPath := "/api/v1/workspaces/test-workspace/projects/proj-1/work-items/wi-1/relations/remove/"
+			// Uses the app-level endpoint (not /api/v1/), which is the only path
+			// that the Plane backend registers for relation removal.
+			expectedPath := "/api/workspaces/test-workspace/projects/proj-1/issues/wi-1/remove-relation/"
 			if req.URL.Path != expectedPath {
 				t.Errorf("expected path '%s', got '%s'", expectedPath, req.URL.Path)
 			}
@@ -1516,4 +1518,54 @@ func TestClientRemoveWorkItemRelation(t *testing.T) {
 			t.Errorf("expected error message to mention 404, got: %v", err)
 		}
 	})
+}
+
+// TestClientRemoveWorkItemRelation_CorrectEndpoint is the AGENT-79 regression test.
+// It verifies that RemoveWorkItemRelation calls the app-level remove-relation
+// endpoint (POST /api/workspaces/{slug}/projects/{project_id}/issues/{issue_id}/remove-relation/)
+// rather than the non-existent v1 relations/remove/ path that previously produced 404s.
+//
+// Arrange: a client pointed at a test server; a transport that records the request path.
+// Act:     call RemoveWorkItemRelation.
+// Assert:  the path matches /api/workspaces/.../issues/.../remove-relation/ (not v1 path).
+func TestClientRemoveWorkItemRelation_CorrectEndpoint(t *testing.T) {
+	cfg := &config.Config{
+		PlaneAPIKey:        "test-key",
+		PlaneBaseURL:       "https://plane.example.com",
+		PlaneWorkspaceSlug: "test-workspace",
+	}
+
+	// Arrange
+	var capturedPath string
+	var capturedBody map[string]any
+
+	client := NewClient(cfg)
+	client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+		capturedPath = req.URL.Path
+		bodyBytes, _ := io.ReadAll(req.Body)
+		_ = json.Unmarshal(bodyBytes, &capturedBody)
+		return &http.Response{
+			StatusCode: 204,
+			Body:       io.NopCloser(strings.NewReader("")),
+		}, nil
+	})
+
+	// Act
+	err := client.RemoveWorkItemRelation(context.Background(), "proj-1", "wi-src", "wi-related")
+
+	// Assert: no error
+	if err != nil {
+		t.Fatalf("RemoveWorkItemRelation returned unexpected error: %v", err)
+	}
+
+	// Assert: uses the app-level endpoint, not the broken v1 path.
+	wantPath := "/api/workspaces/test-workspace/projects/proj-1/issues/wi-src/remove-relation/"
+	if capturedPath != wantPath {
+		t.Errorf("wrong endpoint:\n  got  %q\n  want %q\n\nThe old v1 path /api/v1/.../relations/remove/ returns 404.", capturedPath, wantPath)
+	}
+
+	// Assert: body carries the related issue UUID.
+	if capturedBody["related_issue"] != "wi-related" {
+		t.Errorf("expected related_issue='wi-related' in body, got %v", capturedBody["related_issue"])
+	}
 }
