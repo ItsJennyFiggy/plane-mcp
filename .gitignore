@@ -82,3 +82,6 @@ target/
 graphify-out/
 reasonix.toml
 /plane-mcp
+
+# Local reference clones
+reference-repos/
