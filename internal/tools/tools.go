@@ -1147,9 +1147,20 @@ func listChildren(ctx context.Context, args ListChildrenArgs, client planeClient
 	}
 
 	params := map[string]string{"parent": parentItem.ID}
-	children, err := client.ListWorkItems(ctx, getProjectID(parentItem.Project), params)
+	allItems, err := client.ListWorkItems(ctx, getProjectID(parentItem.Project), params)
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to list children: %v", err)), nil
+	}
+
+	// Filter client-side: keep only items whose Parent UUID matches the resolved
+	// parent. The Plane API accepts the parent query parameter as a hint but some
+	// deployments return the full project list regardless; we enforce the filter
+	// here so callers always get exactly the direct children of the given item.
+	var children []plane.WorkItem
+	for _, item := range allItems {
+		if item.Parent != nil && *item.Parent == parentItem.ID {
+			children = append(children, item)
+		}
 	}
 
 	if len(children) == 0 {

@@ -6650,6 +6650,61 @@ func TestRemoveRelation_APIFailure(t *testing.T) {
 	}
 }
 
+// TestRemoveRelation_PassesRelatedIssueUUID is the AGENT-79 regression test at the
+// tool-handler level. It verifies that removeRelation resolves both work-item
+// identifiers and passes the RELATED item's UUID (not the source item's UUID) as
+// the relatedIssue argument to RemoveWorkItemRelation — which the client then
+// forwards to the correct remove-relation endpoint.
+//
+// Arrange: two work items (PROJ-1 → wi-src, PROJ-2 → wi-rel).
+// Act:     call removeRelation(PROJ-1, PROJ-2).
+// Assert:  RemoveWorkItemRelation is called with workItemID="wi-src" and
+//
+//	relatedIssue="wi-rel" (not the other way around), and succeeds.
+func TestRemoveRelation_PassesRelatedIssueUUID(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	var capturedWorkItemID string
+	var capturedRelatedIssue string
+
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			if seq == 1 {
+				return &plane.WorkItem{ID: "wi-src", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+			}
+			return &plane.WorkItem{ID: "wi-rel", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+		},
+		removeWorkItemRelationFn: func(ctx context.Context, projectID, workItemID, relatedIssue string) error {
+			capturedWorkItemID = workItemID
+			capturedRelatedIssue = relatedIssue
+			return nil
+		},
+	}
+	args := RemoveRelationArgs{
+		Identifier:        "PROJ-1",
+		RelatedIdentifier: "PROJ-2",
+	}
+
+	// Act
+	result, err := removeRelation(ctx, args, client)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected IsError=false, got: %+v", result.Content)
+	}
+	// The source work item's UUID goes as workItemID in the URL path.
+	if capturedWorkItemID != "wi-src" {
+		t.Errorf("expected workItemID='wi-src', got %q", capturedWorkItemID)
+	}
+	// The RELATED item's UUID must be the relatedIssue body field — not its identifier string.
+	if capturedRelatedIssue != "wi-rel" {
+		t.Errorf("expected relatedIssue UUID='wi-rel', got %q — handler must pass the UUID, not the identifier", capturedRelatedIssue)
+	}
+}
+
 func TestListRelations_HappyPath(t *testing.T) {
 	ctx := context.Background()
 
@@ -7119,17 +7174,23 @@ func TestClearParent_UpdateError(t *testing.T) {
 func TestListChildren_HappyPath(t *testing.T) {
 	ctx := context.Background()
 
+	// parentID must match what GetWorkItemByIdentifier returns, so the client-side
+	// filter (Parent == parentItem.ID) keeps both children.
+	parentID := "wi-parent"
+
 	client := &mockClient{
 		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
-			return &plane.WorkItem{ID: "wi-parent", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+			return &plane.WorkItem{ID: parentID, Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
 		},
 		listProjectsFn: func(ctx context.Context) ([]plane.Project, error) {
 			return []plane.Project{{ID: "proj-uuid", Identifier: "PROJ"}}, nil
 		},
 		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			// Items must carry Parent == parentID so the client-side filter passes them through.
+			p := parentID
 			return []plane.WorkItem{
-				{ID: "wi-1", Name: "Child one", SequenceID: 2, Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}},
-				{ID: "wi-2", Name: "Child two", SequenceID: 3, Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}},
+				{ID: "wi-1", Name: "Child one", SequenceID: 2, Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}, Parent: &p},
+				{ID: "wi-2", Name: "Child two", SequenceID: 3, Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}, Parent: &p},
 			}, nil
 		},
 	}
@@ -8124,5 +8185,92 @@ func TestReportProgress_StateOmitted(t *testing.T) {
 	// Verify that no state transition was attempted — the update function should not be called.
 	if client.updateWorkItemFn != nil {
 		t.Error("UpdateWorkItem should not be called when state is omitted")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AGENT-78 regression: listChildren must return only the children of the
+// given parent, not every item in the project.
+// ---------------------------------------------------------------------------
+
+// TestListChildren_FiltersToParentOnly verifies that when the API returns a mix
+// of work items (including items that belong to a different parent), listChildren
+// only surfaces items whose Parent UUID matches the resolved parent.
+//
+// Arrange: parent item wi-parent; child item wi-child (Parent == "wi-parent");
+//
+//	unrelated item wi-unrelated (Parent == "wi-other").
+//
+// Act:    call listChildren with identifier "PROJ-1".
+// Assert: result contains "PROJ-2" (the child) and does NOT contain "PROJ-3"
+//
+//	(the unrelated item).
+func TestListChildren_FiltersToParentOnly(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	parentID := "wi-parent"
+
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			// Resolves PROJ-1 → the parent item.
+			return &plane.WorkItem{
+				ID:      parentID,
+				Project: plane.Expandable[plane.Project]{ID: "proj-uuid"},
+			}, nil
+		},
+		listProjectsFn: func(ctx context.Context) ([]plane.Project, error) {
+			return []plane.Project{{ID: "proj-uuid", Identifier: "PROJ"}}, nil
+		},
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			// Simulate an API that ignores the parent filter and returns all items.
+			// wi-child belongs to wi-parent; wi-unrelated belongs to a different parent.
+			unrelatedParent := "wi-other"
+			childParent := parentID
+			return []plane.WorkItem{
+				{
+					ID:         "wi-child",
+					Name:       "Child task",
+					SequenceID: 2,
+					Project:    plane.Expandable[plane.Project]{ID: "proj-uuid"},
+					Parent:     &childParent,
+				},
+				{
+					ID:         "wi-unrelated",
+					Name:       "Unrelated task",
+					SequenceID: 3,
+					Project:    plane.Expandable[plane.Project]{ID: "proj-uuid"},
+					Parent:     &unrelatedParent,
+				},
+			}, nil
+		},
+	}
+	args := ListChildrenArgs{Identifier: "PROJ-1"}
+
+	// Act
+	result, err := listChildren(ctx, args, client)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected IsError=false, got error: %+v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+
+	// Child must appear in output.
+	if !strings.Contains(text, "PROJ-2") {
+		t.Errorf("expected child 'PROJ-2' in output, got:\n%s", text)
+	}
+	if !strings.Contains(text, "Child task") {
+		t.Errorf("expected 'Child task' in output, got:\n%s", text)
+	}
+
+	// Unrelated item must NOT appear — this is the regression assertion.
+	if strings.Contains(text, "PROJ-3") {
+		t.Errorf("expected unrelated item 'PROJ-3' to be filtered out, but it appeared in output:\n%s", text)
+	}
+	if strings.Contains(text, "Unrelated task") {
+		t.Errorf("expected 'Unrelated task' to be filtered out, but it appeared in output:\n%s", text)
 	}
 }
