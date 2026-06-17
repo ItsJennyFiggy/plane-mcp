@@ -950,6 +950,9 @@ func listRelations(ctx context.Context, args ListRelationsArgs, client planeClie
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to list relations: %v", err)), nil
 	}
+	if relations == nil {
+		return toolError("relations data is missing or empty"), nil
+	}
 
 	// Build a project ID -> identifier map from all projects
 	projects, err := client.ListProjects(ctx)
