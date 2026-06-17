@@ -45,7 +45,6 @@ type planeClient interface {
 	GetWorkItem(ctx context.Context, projectID, workItemID string) (*plane.WorkItem, error)
 	ListWorkItemRelations(ctx context.Context, projectID, workItemID string) (*plane.WorkItemRelations, error)
 	CreateWorkItemRelation(ctx context.Context, projectID, workItemID, relationType string, issues []string) error
-	RemoveWorkItemRelation(ctx context.Context, projectID, workItemID, relatedIssue string) error
 	DeleteWorkItem(ctx context.Context, projectID, workItemID string) error
 }
 
@@ -922,33 +921,15 @@ func setRelation(ctx context.Context, args SetRelationArgs, client planeClient) 
 }
 
 // removeRelation implements the remove_relation tool logic.
-func removeRelation(ctx context.Context, args RemoveRelationArgs, client planeClient) (*mcp.CallToolResult, error) {
-	// Resolve source work item
-	srcProj, srcSeq, err := parseIdentifier(args.Identifier)
-	if err != nil {
-		return toolError(err.Error()), nil
-	}
-	srcItem, err := client.GetWorkItemByIdentifier(ctx, srcProj, srcSeq)
-	if err != nil {
-		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
-	}
-
-	// Resolve related work item
-	relProj, relSeq, err := parseIdentifier(args.RelatedIdentifier)
-	if err != nil {
-		return toolError(err.Error()), nil
-	}
-	relItem, err := client.GetWorkItemByIdentifier(ctx, relProj, relSeq)
-	if err != nil {
-		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.RelatedIdentifier, err)), nil
-	}
-
-	err = client.RemoveWorkItemRelation(ctx, getProjectID(srcItem.Project), srcItem.ID, relItem.ID)
-	if err != nil {
-		return toolError(fmt.Sprintf("failed to remove relation: %v", err)), nil
-	}
-
-	return toolText(fmt.Sprintf("Relation removed between %s and %s", args.Identifier, args.RelatedIdentifier)), nil
+//
+// AGENT-79: The Plane public API exposes no relation-removal endpoint for API-key
+// authentication. The v1 /relations/ route is GET/POST only (no DELETE), and the
+// app-level /remove-relation/ route requires session-cookie auth the MCP server
+// does not hold (returns 401). The official Plane MCP server ships no removal tool
+// for the same reason. We therefore fail fast with a clear, actionable error
+// rather than make a request that cannot succeed.
+func removeRelation(_ context.Context, _ RemoveRelationArgs, _ planeClient) (*mcp.CallToolResult, error) {
+	return toolError("remove_relation is not supported: the Plane API provides no relation-removal endpoint for API-key authentication. Remove the relation from the Plane web UI instead."), nil
 }
 
 // listRelations implements the list_relations tool logic.
@@ -2266,7 +2247,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 	if shouldRegister("remove_relation", plannerFull, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "remove_relation",
-			Description: "Remove a relation between two work items by their project-prefixed identifiers (e.g. PROJ-123).",
+			Description: "NOT FUNCTIONAL — the Plane API has no relation-removal endpoint for API-key auth. Calls return an error; remove relations via the Plane web UI.",
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, IdempotentHint: true},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args RemoveRelationArgs) (*mcp.CallToolResult, any, error) {
 			result, err := removeRelation(ctx, args, client)

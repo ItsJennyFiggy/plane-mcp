@@ -537,25 +537,6 @@ func (c *Client) CreateWorkItemRelation(ctx context.Context, projectID, workItem
 	return c.request(ctx, "POST", path, nil, body, nil)
 }
 
-// RemoveWorkItemRelation removes a relation between a work item and another work item.
-//
-// The Plane v1 API (/api/v1/) registers only GET and POST on the /relations/
-// sub-path; there is no /relations/remove/ endpoint at the v1 level.
-// The working endpoint lives under the app-level API and uses the legacy "issues"
-// path segment:
-//
-//	POST /api/workspaces/{slug}/projects/{projectID}/issues/{workItemID}/remove-relation/
-//
-// Body: {"related_issue": "<related-work-item-uuid>"}
-// The server performs a bidirectional lookup so argument order does not matter.
-func (c *Client) RemoveWorkItemRelation(ctx context.Context, projectID, workItemID, relatedIssue string) error {
-	path := fmt.Sprintf("/api/workspaces/%s/projects/%s/issues/%s/remove-relation/", c.WorkspaceSlug, projectID, workItemID)
-	body := map[string]any{
-		"related_issue": relatedIssue,
-	}
-	return c.request(ctx, "POST", path, nil, body, nil)
-}
-
 // GetLastComment retrieves the single most recently created comment on a work item.
 // Path: GET /api/v1/workspaces/{slug}/projects/{projectID}/work-items/{workItemID}/comments/
 // Returns nil if no comments exist.

@@ -551,7 +551,6 @@ type mockClient struct {
 	getWorkItemFn             func(ctx context.Context, projectID, workItemID string) (*plane.WorkItem, error)
 	listWorkItemRelationsFn   func(ctx context.Context, projectID, workItemID string) (*plane.WorkItemRelations, error)
 	createWorkItemRelationFn  func(ctx context.Context, projectID, workItemID, relationType string, issues []string) error
-	removeWorkItemRelationFn  func(ctx context.Context, projectID, workItemID, relatedIssue string) error
 	deleteWorkItemFn          func(ctx context.Context, projectID, workItemID string) error
 }
 
@@ -608,9 +607,6 @@ func (m *mockClient) ListWorkItemRelations(ctx context.Context, projectID, workI
 }
 func (m *mockClient) CreateWorkItemRelation(ctx context.Context, projectID, workItemID, relationType string, issues []string) error {
 	return m.createWorkItemRelationFn(ctx, projectID, workItemID, relationType, issues)
-}
-func (m *mockClient) RemoveWorkItemRelation(ctx context.Context, projectID, workItemID, relatedIssue string) error {
-	return m.removeWorkItemRelationFn(ctx, projectID, workItemID, relatedIssue)
 }
 func (m *mockClient) DeleteWorkItem(ctx context.Context, projectID, workItemID string) error {
 	return m.deleteWorkItemFn(ctx, projectID, workItemID)
@@ -6444,123 +6440,20 @@ func TestSetRelation_APIFailure(t *testing.T) {
 	}
 }
 
-func TestRemoveRelation_HappyPath(t *testing.T) {
-	ctx := context.Background()
-	var capturedRelatedIssue string
-	var capturedWorkItemID string
-
-	client := &mockClient{
-		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
-			if pi == "PROJ" && seq == 1 {
-				return &plane.WorkItem{ID: "wi-1", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
-			}
-			return &plane.WorkItem{ID: "wi-2", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
-		},
-		removeWorkItemRelationFn: func(ctx context.Context, projectID, workItemID, relatedIssue string) error {
-			capturedWorkItemID = workItemID
-			capturedRelatedIssue = relatedIssue
-			return nil
-		},
-	}
-	args := RemoveRelationArgs{
-		Identifier:        "PROJ-1",
-		RelatedIdentifier: "PROJ-2",
-	}
-
-	result, err := removeRelation(ctx, args, client)
-	if err != nil {
-		t.Fatalf("unexpected Go error: %v", err)
-	}
-	if result.IsError {
-		t.Errorf("expected IsError=false: %+v", result.Content)
-	}
-	if capturedWorkItemID != "wi-1" {
-		t.Errorf("expected workItemID='wi-1', got %q", capturedWorkItemID)
-	}
-	if capturedRelatedIssue != "wi-2" {
-		t.Errorf("expected relatedIssue='wi-2', got %q", capturedRelatedIssue)
-	}
-}
-
-func TestRemoveRelation_SourceNotFound(t *testing.T) {
-	ctx := context.Background()
-	client := &mockClient{
-		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
-			return nil, errors.New("not found")
-		},
-	}
-	args := RemoveRelationArgs{
-		Identifier:        "PROJ-99",
-		RelatedIdentifier: "PROJ-2",
-	}
-
-	result, err := removeRelation(ctx, args, client)
-	if err != nil {
-		t.Fatalf("unexpected Go error: %v", err)
-	}
-	if !result.IsError {
-		t.Error("expected IsError=true when source item not found")
-	}
-}
-
-func TestRemoveRelation_APIFailure(t *testing.T) {
-	ctx := context.Background()
-	client := &mockClient{
-		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
-			return &plane.WorkItem{ID: "wi-1", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
-		},
-		removeWorkItemRelationFn: func(ctx context.Context, projectID, workItemID, relatedIssue string) error {
-			return errors.New("api error")
-		},
-	}
-	args := RemoveRelationArgs{
-		Identifier:        "PROJ-1",
-		RelatedIdentifier: "PROJ-2",
-	}
-
-	result, err := removeRelation(ctx, args, client)
-	if err != nil {
-		t.Fatalf("unexpected Go error: %v", err)
-	}
-	if !result.IsError {
-		t.Error("expected IsError=true when API fails")
-	}
-}
-
-// TestRemoveRelation_PassesRelatedIssueUUID is the AGENT-79 regression test at the
-// tool-handler level. It verifies that removeRelation resolves both work-item
-// identifiers and passes the RELATED item's UUID (not the source item's UUID) as
-// the relatedIssue argument to RemoveWorkItemRelation — which the client then
-// forwards to the correct remove-relation endpoint.
+// TestRemoveRelation_Unsupported is the AGENT-79 regression test. The Plane public
+// API exposes no relation-removal endpoint for API-key authentication, so the tool
+// must fail fast with a clear error and must never depend on a client call.
 //
-// Arrange: two work items (PROJ-1 → wi-src, PROJ-2 → wi-rel).
-// Act:     call removeRelation(PROJ-1, PROJ-2).
-// Assert:  RemoveWorkItemRelation is called with workItemID="wi-src" and
+// Arrange: a mockClient with no behaviour wired (any client call would nil-panic).
+// Act:     call removeRelation.
+// Assert:  IsError is true, the message explains it is unsupported, and the client
 //
-//	relatedIssue="wi-rel" (not the other way around), and succeeds.
-func TestRemoveRelation_PassesRelatedIssueUUID(t *testing.T) {
+//	was never touched.
+func TestRemoveRelation_Unsupported(t *testing.T) {
 	// Arrange
 	ctx := context.Background()
-	var capturedWorkItemID string
-	var capturedRelatedIssue string
-
-	client := &mockClient{
-		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
-			if seq == 1 {
-				return &plane.WorkItem{ID: "wi-src", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
-			}
-			return &plane.WorkItem{ID: "wi-rel", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
-		},
-		removeWorkItemRelationFn: func(ctx context.Context, projectID, workItemID, relatedIssue string) error {
-			capturedWorkItemID = workItemID
-			capturedRelatedIssue = relatedIssue
-			return nil
-		},
-	}
-	args := RemoveRelationArgs{
-		Identifier:        "PROJ-1",
-		RelatedIdentifier: "PROJ-2",
-	}
+	client := &mockClient{} // intentionally empty: the handler must not touch the client
+	args := RemoveRelationArgs{Identifier: "PROJ-1", RelatedIdentifier: "PROJ-2"}
 
 	// Act
 	result, err := removeRelation(ctx, args, client)
@@ -6569,16 +6462,12 @@ func TestRemoveRelation_PassesRelatedIssueUUID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected Go error: %v", err)
 	}
-	if result.IsError {
-		t.Fatalf("expected IsError=false, got: %+v", result.Content)
+	if !result.IsError {
+		t.Fatal("expected IsError=true: remove_relation is not supported by the Plane API")
 	}
-	// The source work item's UUID goes as workItemID in the URL path.
-	if capturedWorkItemID != "wi-src" {
-		t.Errorf("expected workItemID='wi-src', got %q", capturedWorkItemID)
-	}
-	// The RELATED item's UUID must be the relatedIssue body field — not its identifier string.
-	if capturedRelatedIssue != "wi-rel" {
-		t.Errorf("expected relatedIssue UUID='wi-rel', got %q — handler must pass the UUID, not the identifier", capturedRelatedIssue)
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "not supported") {
+		t.Errorf("expected message to state the tool is not supported, got: %s", text)
 	}
 }
 
