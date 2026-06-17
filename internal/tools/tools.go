@@ -1324,6 +1324,7 @@ func moveWorkItem(ctx context.Context, args MoveWorkItemArgs, client planeClient
 		for _, w := range warnings {
 			resultText += fmt.Sprintf("- %s\n", w)
 		}
+		resultText += "Please manually verify the original work item state and delete/link it if necessary.\n"
 	}
 
 	return toolText(resultText), nil
@@ -1704,12 +1705,6 @@ func listWorkItems(ctx context.Context, args ListWorkItemsArgs, client planeClie
 	filterByStateGroup := args.StateGroup != nil && *args.StateGroup != ""
 
 	params := map[string]string{}
-	if !filterByStateGroup {
-		// Forward state_group to the API only when we are NOT filtering client-side.
-		if args.StateGroup != nil && *args.StateGroup != "" {
-			params["state_group"] = *args.StateGroup
-		}
-	}
 	if args.Priority != nil && *args.Priority != "" {
 		params["priority"] = *args.Priority
 	}

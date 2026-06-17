@@ -661,6 +661,76 @@ func TestClientCreateWorkItemComment(t *testing.T) {
 			t.Errorf("expected error message to mention 403, got: %v", err)
 		}
 	})
+
+	t.Run("Non-HTML text starting with < gets wrapped in <p>", func(t *testing.T) {
+		testCases := []struct {
+			name string
+			text string
+			expectedHTML string
+		}{
+			{"arrow text", "<- check this out", "<p><- check this out</p>"},
+			{"heart emoticon", "<3 text", "<p><3 text</p>"},
+			{"just less-than sign", "< not HTML", "<p>< not HTML</p>"},
+		}
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				client := NewClient(cfg)
+				client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+					var reqBody map[string]any
+					bodyBytes, _ := io.ReadAll(req.Body)
+					if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
+						t.Fatalf("failed to parse request body: %v", err)
+					}
+					if reqBody["comment_html"] != tc.expectedHTML {
+						t.Errorf("expected comment_html=%q, got %q", tc.expectedHTML, reqBody["comment_html"])
+					}
+					return &http.Response{
+						StatusCode: 201,
+						Body:       io.NopCloser(strings.NewReader(`{"id": "comment-1"}`)),
+					}, nil
+				})
+				err := client.CreateWorkItemComment(context.Background(), "proj-1", "wi-42", tc.text)
+				if err != nil {
+					t.Fatalf("CreateWorkItemComment failed: %v", err)
+				}
+			})
+		}
+	})
+
+	t.Run("Real HTML is NOT wrapped", func(t *testing.T) {
+		testCases := []struct {
+			name string
+			text string
+		}{
+			{"paragraph", "<p>test</p>"},
+			{"div", "<div>test</div>"},
+			{"html comment", "<!-- comment -->"},
+			{"self-closing tag", "<br/>"},
+		}
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				client := NewClient(cfg)
+				client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+					var reqBody map[string]any
+					bodyBytes, _ := io.ReadAll(req.Body)
+					if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
+						t.Fatalf("failed to parse request body: %v", err)
+					}
+					if reqBody["comment_html"] != tc.text {
+						t.Errorf("expected comment_html=%q (unchanged), got %q", tc.text, reqBody["comment_html"])
+					}
+					return &http.Response{
+						StatusCode: 201,
+						Body:       io.NopCloser(strings.NewReader(`{"id": "comment-1"}`)),
+					}, nil
+				})
+				err := client.CreateWorkItemComment(context.Background(), "proj-1", "wi-42", tc.text)
+				if err != nil {
+					t.Fatalf("CreateWorkItemComment failed: %v", err)
+				}
+			})
+		}
+	})
 }
 
 func TestClientCreateWorkItemLink(t *testing.T) {
