@@ -480,6 +480,7 @@ func TestToolText(t *testing.T) {
 // strPtr returns a pointer to the given string — useful for building
 // FindMyWorkArgs literals with optional *string fields.
 func strPtr(s string) *string { return &s }
+func intPtr(n int) *int       { return &n }
 
 // mockClient is a test double for planeClient.
 type mockClient struct {
@@ -4106,16 +4107,29 @@ func TestListWorkItems_ListError(t *testing.T) {
 	}
 }
 
-// TestListWorkItems_StateGroupFilter — passes state_group to the API.
+// TestListWorkItems_StateGroupFilter — filters by state_group client-side
+// because the Plane API ignores the state_group parameter.
 func TestListWorkItems_StateGroupFilter(t *testing.T) {
 	ctx := context.Background()
-	items := []plane.WorkItem{{ID: "wi-1", Name: "In Progress", SequenceID: 1}}
+	allItems := []plane.WorkItem{
+		{ID: "wi-1", Name: "In Progress", SequenceID: 1, State: plane.Expandable[plane.State]{ID: "st-1", Val: &plane.State{ID: "st-1", Group: "started"}}},
+		{ID: "wi-2", Name: "Done", SequenceID: 2, State: plane.Expandable[plane.State]{ID: "st-2", Val: &plane.State{ID: "st-2", Group: "completed"}}},
+		{ID: "wi-3", Name: "Todo", SequenceID: 3, State: plane.Expandable[plane.State]{ID: "st-3", Val: &plane.State{ID: "st-3", Group: "unstarted"}}},
+	}
 	client := &mockClient{
 		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
-			if params["state_group"] != "started" {
-				t.Errorf("expected state_group=started, got %q", params["state_group"])
+			// state_group must NOT be passed to the API.
+			if _, ok := params["state_group"]; ok {
+				t.Error("state_group param should NOT be passed to the API when filtering client-side")
 			}
-			return items, nil
+			return allItems, nil
+		},
+		listStatesFn: func(ctx context.Context, projectID string) ([]plane.State, error) {
+			return []plane.State{
+				{ID: "st-1", Group: "started"},
+				{ID: "st-2", Group: "completed"},
+				{ID: "st-3", Group: "unstarted"},
+			}, nil
 		},
 	}
 	resolver := &mockResolver{
@@ -4123,8 +4137,10 @@ func TestListWorkItems_StateGroupFilter(t *testing.T) {
 			return &plane.Project{ID: "proj-uuid", Name: "Alpha", Identifier: "ALP"}, nil
 		},
 	}
+	var formattedItems []plane.WorkItem
 	formatter := &mockFormatter{
 		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
+			formattedItems = items
 			return "- name: In Progress\n", nil
 		},
 	}
@@ -4136,6 +4152,146 @@ func TestListWorkItems_StateGroupFilter(t *testing.T) {
 	}
 	if result.IsError {
 		t.Errorf("expected IsError=false, got: %+v", result.Content)
+	}
+	if len(formattedItems) != 1 {
+		t.Fatalf("expected 1 filtered item, got %d", len(formattedItems))
+	}
+	if formattedItems[0].Name != "In Progress" {
+		t.Errorf("expected 'In Progress', got %q", formattedItems[0].Name)
+	}
+}
+
+// TestListWorkItems_StateGroupFilterWithLimit — filters by state_group client-side
+// and then applies the limit post-filter.
+func TestListWorkItems_StateGroupFilterWithLimit(t *testing.T) {
+	ctx := context.Background()
+	allItems := []plane.WorkItem{
+		{ID: "wi-1", Name: "Task A", SequenceID: 1, State: plane.Expandable[plane.State]{ID: "st-1", Val: &plane.State{ID: "st-1", Group: "started"}}},
+		{ID: "wi-2", Name: "Task B", SequenceID: 2, State: plane.Expandable[plane.State]{ID: "st-1", Val: &plane.State{ID: "st-1", Group: "started"}}},
+		{ID: "wi-3", Name: "Task C", SequenceID: 3, State: plane.Expandable[plane.State]{ID: "st-1", Val: &plane.State{ID: "st-1", Group: "started"}}},
+		{ID: "wi-4", Name: "Task D", SequenceID: 4, State: plane.Expandable[plane.State]{ID: "st-2", Val: &plane.State{ID: "st-2", Group: "completed"}}},
+	}
+	client := &mockClient{
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			// limit must NOT be passed to the API when filtering client-side.
+			if _, ok := params["limit"]; ok {
+				t.Error("limit param should NOT be passed to the API when filtering client-side")
+			}
+			return allItems, nil
+		},
+		listStatesFn: func(ctx context.Context, projectID string) ([]plane.State, error) {
+			return []plane.State{
+				{ID: "st-1", Group: "started"},
+				{ID: "st-2", Group: "completed"},
+			}, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "Alpha", Identifier: "ALP"}, nil
+		},
+	}
+	var formattedItems []plane.WorkItem
+	formatter := &mockFormatter{
+		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
+			formattedItems = items
+			return "- name: Task\n", nil
+		},
+	}
+	args := ListWorkItemsArgs{Project: "Alpha", StateGroup: strPtr("started"), Limit: intPtr(2)}
+
+	result, err := listWorkItems(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got: %+v", result.Content)
+	}
+	if len(formattedItems) != 2 {
+		t.Fatalf("expected 2 items after limit, got %d", len(formattedItems))
+	}
+}
+
+// TestListWorkItems_StateGroupFilterCaseInsensitive — state_group filtering
+// is case-insensitive.
+func TestListWorkItems_StateGroupFilterCaseInsensitive(t *testing.T) {
+	ctx := context.Background()
+	allItems := []plane.WorkItem{
+		{ID: "wi-1", Name: "Task One", SequenceID: 1, State: plane.Expandable[plane.State]{ID: "st-1", Val: &plane.State{ID: "st-1", Group: "started"}}},
+	}
+	client := &mockClient{
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			return allItems, nil
+		},
+		listStatesFn: func(ctx context.Context, projectID string) ([]plane.State, error) {
+			return []plane.State{
+				{ID: "st-1", Group: "STARTED"},
+			}, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "Alpha", Identifier: "ALP"}, nil
+		},
+	}
+	var formattedItems []plane.WorkItem
+	formatter := &mockFormatter{
+		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
+			formattedItems = items
+			return "- name: Task One\n", nil
+		},
+	}
+	// Use lowercase "started" to match uppercase "STARTED" group.
+	args := ListWorkItemsArgs{Project: "Alpha", StateGroup: strPtr("started")}
+
+	result, err := listWorkItems(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got: %+v", result.Content)
+	}
+	if len(formattedItems) != 1 {
+		t.Fatalf("expected 1 item after case-insensitive match, got %d", len(formattedItems))
+	}
+}
+
+// TestListWorkItems_StateGroupNoMatches — no items match the requested state_group.
+func TestListWorkItems_StateGroupNoMatches(t *testing.T) {
+	ctx := context.Background()
+	allItems := []plane.WorkItem{
+		{ID: "wi-1", Name: "Done", SequenceID: 1, State: plane.Expandable[plane.State]{ID: "st-1", Val: &plane.State{ID: "st-1", Group: "completed"}}},
+		{ID: "wi-2", Name: "Todo", SequenceID: 2, State: plane.Expandable[plane.State]{ID: "st-2", Val: &plane.State{ID: "st-2", Group: "unstarted"}}},
+	}
+	client := &mockClient{
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			return allItems, nil
+		},
+		listStatesFn: func(ctx context.Context, projectID string) ([]plane.State, error) {
+			return []plane.State{
+				{ID: "st-1", Group: "completed"},
+				{ID: "st-2", Group: "unstarted"},
+			}, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "Alpha", Identifier: "ALP"}, nil
+		},
+	}
+	formatter := &mockFormatter{}
+	args := ListWorkItemsArgs{Project: "Alpha", StateGroup: strPtr("started")}
+
+	result, err := listWorkItems(ctx, args, client, resolver, formatter)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Error("expected IsError=false for empty filtered result")
+	}
+	tc := result.Content[0].(*mcp.TextContent)
+	if tc.Text != "[]" {
+		t.Errorf("expected '[]', got: %q", tc.Text)
 	}
 }
 
@@ -4337,14 +4493,18 @@ func TestListWorkItems_LabelsResolveError(t *testing.T) {
 	}
 }
 
-// TestListWorkItems_AllFilters — combines all filters.
+// TestListWorkItems_AllFilters — combines all filters (state_group is client-side).
 func TestListWorkItems_AllFilters(t *testing.T) {
 	ctx := context.Background()
-	items := []plane.WorkItem{{ID: "wi-1", Name: "Filtered Task", SequenceID: 1}}
+	allItems := []plane.WorkItem{
+		{ID: "wi-1", Name: "Filtered Task", SequenceID: 1, State: plane.Expandable[plane.State]{ID: "st-1", Val: &plane.State{ID: "st-1", Group: "started"}}},
+		{ID: "wi-2", Name: "Other Task", SequenceID: 2, State: plane.Expandable[plane.State]{ID: "st-2", Val: &plane.State{ID: "st-2", Group: "completed"}}},
+	}
 	client := &mockClient{
 		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
-			if params["state_group"] != "started" {
-				t.Errorf("expected state_group=started, got %q", params["state_group"])
+			// state_group must NOT be passed to the API.
+			if _, ok := params["state_group"]; ok {
+				t.Error("state_group param should NOT be passed to the API when filtering client-side")
 			}
 			if params["priority"] != "high" {
 				t.Errorf("expected priority=high, got %q", params["priority"])
@@ -4358,7 +4518,13 @@ func TestListWorkItems_AllFilters(t *testing.T) {
 			if params["labels"] != "label-uuid" {
 				t.Errorf("expected labels=label-uuid, got %q", params["labels"])
 			}
-			return items, nil
+			return allItems, nil
+		},
+		listStatesFn: func(ctx context.Context, projectID string) ([]plane.State, error) {
+			return []plane.State{
+				{ID: "st-1", Group: "started"},
+				{ID: "st-2", Group: "completed"},
+			}, nil
 		},
 	}
 	resolver := &mockResolver{
@@ -4372,8 +4538,10 @@ func TestListWorkItems_AllFilters(t *testing.T) {
 			return &plane.Label{ID: "label-uuid", Name: "frontend"}, nil
 		},
 	}
+	var formattedItems []plane.WorkItem
 	formatter := &mockFormatter{
 		formatWorkItemsYAMLFn: func(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
+			formattedItems = items
 			return "- name: Filtered Task\n", nil
 		},
 	}
@@ -4392,6 +4560,12 @@ func TestListWorkItems_AllFilters(t *testing.T) {
 	}
 	if result.IsError {
 		t.Errorf("expected IsError=false, got: %+v", result.Content)
+	}
+	if len(formattedItems) != 1 {
+		t.Fatalf("expected 1 filtered item, got %d", len(formattedItems))
+	}
+	if formattedItems[0].Name != "Filtered Task" {
+		t.Errorf("expected 'Filtered Task', got %q", formattedItems[0].Name)
 	}
 }
 

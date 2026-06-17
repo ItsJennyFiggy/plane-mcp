@@ -1697,9 +1697,15 @@ func listWorkItems(ctx context.Context, args ListWorkItemsArgs, client planeClie
 		return toolError(fmt.Sprintf("failed to resolve project %q: %v", args.Project, err)), nil
 	}
 
+	// Determine whether we need client-side state_group filtering.
+	filterByStateGroup := args.StateGroup != nil && *args.StateGroup != ""
+
 	params := map[string]string{}
-	if args.StateGroup != nil && *args.StateGroup != "" {
-		params["state_group"] = *args.StateGroup
+	if !filterByStateGroup {
+		// Forward state_group to the API only when we are NOT filtering client-side.
+		if args.StateGroup != nil && *args.StateGroup != "" {
+			params["state_group"] = *args.StateGroup
+		}
 	}
 	if args.Priority != nil && *args.Priority != "" {
 		params["priority"] = *args.Priority
@@ -1752,14 +1758,54 @@ func listWorkItems(ctx context.Context, args ListWorkItemsArgs, client planeClie
 		params["labels"] = strings.Join(ids, ",")
 	}
 
-	// Apply limit.
-	if args.Limit != nil && *args.Limit > 0 {
-		params["limit"] = strconv.Itoa(*args.Limit)
+	// When filtering by state_group, do NOT forward state_group or limit to the
+	// API.  The Plane API ignores state_group, and listAllGeneric would
+	// prematurely slice unfiltered results when limit is present.
+	if filterByStateGroup {
+		if args.Limit != nil && *args.Limit > 0 {
+			// Limit is applied AFTER client-side filtering (see below).
+		}
+	} else {
+		if args.Limit != nil && *args.Limit > 0 {
+			params["limit"] = strconv.Itoa(*args.Limit)
+		}
 	}
 
 	items, err := client.ListWorkItems(ctx, proj.ID, params)
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to list work items: %v", err)), nil
+	}
+
+	// Client-side state_group filtering.
+	if filterByStateGroup {
+		states, err := client.ListStates(ctx, proj.ID)
+		if err != nil {
+			return toolError(fmt.Sprintf("failed to list states for state_group filtering: %v", err)), nil
+		}
+
+		stateGroupByID := make(map[string]string, len(states))
+		for _, s := range states {
+			stateGroupByID[s.ID] = s.Group
+		}
+
+		var filtered []plane.WorkItem
+		for _, item := range items {
+			stateID := item.State.ID
+			if item.State.Val != nil {
+				stateID = item.State.Val.ID
+			}
+			group, ok := stateGroupByID[stateID]
+			if ok && strings.EqualFold(group, *args.StateGroup) {
+				filtered = append(filtered, item)
+			}
+		}
+
+		// Apply limit after filtering.
+		if args.Limit != nil && *args.Limit > 0 && len(filtered) > *args.Limit {
+			filtered = filtered[:*args.Limit]
+		}
+
+		items = filtered
 	}
 
 	if len(items) == 0 {
