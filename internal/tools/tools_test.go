@@ -1861,165 +1861,42 @@ func TestGetWorkItem_FormatError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// FlexibleDetail unmarshaling tests
+// AGENT-81: detail parameter — strict string enum tests
+//
+// The FlexibleDetail type (with boolean/alias coercion) was removed in AGENT-81.
+// The detail field is now a plain string validated by the MCP schema enum at the
+// protocol layer. The tests below replace the old FlexibleDetail unmarshaling
+// tests and verify:
+//   (a) the three canonical constants are valid string values
+//   (b) each value reaches the formatter correctly via getWorkItem
+//   (c) the schema enum is constrained to exactly the three canonical values
+//
+// Tests for boolean coercion (true→"full", false→"summary") and alias coercion
+// ("summary-with-labels", "true", "false" strings) were removed because those
+// inputs are now rejected at the MCP SDK schema-validation layer before they
+// reach Go code — the coercion was dead code and its removal is intentional
+// per the AGENT-81 design decision.
 // ---------------------------------------------------------------------------
 
-func TestFlexibleDetail_UnmarshalJSON_BoolTrue(t *testing.T) {
-	var d FlexibleDetail
-	if err := json.Unmarshal([]byte("true"), &d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+// TestDetailConstants — verify the three canonical string constants have the expected values.
+func TestDetailConstants(t *testing.T) {
+	if DetailSummary != "summary" {
+		t.Errorf("DetailSummary = %q, want %q", DetailSummary, "summary")
 	}
-	if d != DetailFull {
-		t.Errorf("expected 'full', got %q", d)
+	if DetailFull != "full" {
+		t.Errorf("DetailFull = %q, want %q", DetailFull, "full")
 	}
-}
-
-func TestFlexibleDetail_UnmarshalJSON_BoolFalse(t *testing.T) {
-	var d FlexibleDetail
-	if err := json.Unmarshal([]byte("false"), &d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d != DetailSummary {
-		t.Errorf("expected 'summary', got %q", d)
-	}
-}
-
-func TestFlexibleDetail_UnmarshalJSON_StringFull(t *testing.T) {
-	var d FlexibleDetail
-	if err := json.Unmarshal([]byte(`"full"`), &d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d != DetailFull {
-		t.Errorf("expected 'full', got %q", d)
-	}
-}
-
-func TestFlexibleDetail_UnmarshalJSON_StringSummary(t *testing.T) {
-	var d FlexibleDetail
-	if err := json.Unmarshal([]byte(`"summary"`), &d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d != DetailSummary {
-		t.Errorf("expected 'summary', got %q", d)
-	}
-}
-
-func TestFlexibleDetail_UnmarshalJSON_StringSummaryWithLabels(t *testing.T) {
-	var d FlexibleDetail
-	if err := json.Unmarshal([]byte(`"summary_with_labels"`), &d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d != DetailSummaryWithLabels {
-		t.Errorf("expected 'summary_with_labels', got %q", d)
-	}
-}
-
-func TestFlexibleDetail_UnmarshalJSON_StringTrueMapsToFull(t *testing.T) {
-	var d FlexibleDetail
-	if err := json.Unmarshal([]byte(`"true"`), &d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d != DetailFull {
-		t.Errorf("expected 'full' for string 'true', got %q", d)
-	}
-}
-
-func TestFlexibleDetail_UnmarshalJSON_StringFalseMapsToSummary(t *testing.T) {
-	var d FlexibleDetail
-	if err := json.Unmarshal([]byte(`"false"`), &d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d != DetailSummary {
-		t.Errorf("expected 'summary' for string 'false', got %q", d)
-	}
-}
-
-func TestFlexibleDetail_UnmarshalJSON_CaseInsensitive(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected FlexibleDetail
-	}{
-		{`"FULL"`, DetailFull},
-		{`"Full"`, DetailFull},
-		{`"SUMMARY"`, DetailSummary},
-		{`"Summary"`, DetailSummary},
-		{`"SUMMARY_WITH_LABELS"`, DetailSummaryWithLabels},
-		{`"Summary_With_Labels"`, DetailSummaryWithLabels},
-	}
-	for _, tc := range tests {
-		var d FlexibleDetail
-		if err := json.Unmarshal([]byte(tc.input), &d); err != nil {
-			t.Errorf("input %s: unexpected error: %v", tc.input, err)
-			continue
-		}
-		if d != tc.expected {
-			t.Errorf("input %s: expected %q, got %q", tc.input, tc.expected, d)
-		}
-	}
-}
-
-func TestFlexibleDetail_UnmarshalJSON_WhitespaceTrimmed(t *testing.T) {
-	var d FlexibleDetail
-	if err := json.Unmarshal([]byte(`"  full  "`), &d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d != DetailFull {
-		t.Errorf("expected 'full' after trimming, got %q", d)
-	}
-}
-
-func TestFlexibleDetail_UnmarshalJSON_UnrecognizedDefaultsToSummary(t *testing.T) {
-	tests := []string{`"all"`, `"everything"`, `"detailed"`, `"unknown"`}
-	for _, input := range tests {
-		var d FlexibleDetail
-		if err := json.Unmarshal([]byte(input), &d); err != nil {
-			t.Errorf("input %s: unexpected error: %v", input, err)
-			continue
-		}
-		if d != DetailSummary {
-			t.Errorf("input %s: expected 'summary' (default), got %q", input, d)
-		}
-	}
-}
-
-func TestFlexibleDetail_UnmarshalJSON_Null(t *testing.T) {
-	var d FlexibleDetail
-	if err := json.Unmarshal([]byte("null"), &d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d != DetailSummary {
-		t.Errorf("expected 'summary' for null, got %q", d)
-	}
-}
-
-func TestFlexibleDetail_UnmarshalJSON_EmptyString(t *testing.T) {
-	var d FlexibleDetail
-	if err := json.Unmarshal([]byte(`""`), &d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d != DetailSummary {
-		t.Errorf("expected 'summary' for empty string, got %q", d)
-	}
-}
-
-func TestFlexibleDetail_UnmarshalJSON_SummaryWithLabelsHyphenVariant(t *testing.T) {
-	var d FlexibleDetail
-	if err := json.Unmarshal([]byte(`"summary-with-labels"`), &d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if d != DetailSummaryWithLabels {
-		t.Errorf("expected 'summary_with_labels' for hyphen variant, got %q", d)
+	if DetailSummaryWithLabels != "summary_with_labels" {
+		t.Errorf("DetailSummaryWithLabels = %q, want %q", DetailSummaryWithLabels, "summary_with_labels")
 	}
 }
 
 // ---------------------------------------------------------------------------
-// getWorkItem detail normalisation integration tests
+// getWorkItem detail integration tests
 // ---------------------------------------------------------------------------
 
-// TestGetWorkItem_DetailPassedToFormatter verifies that a non-default
-// FlexibleDetail (DetailFull) reaches the formatter as the normalised
-// string "full" when set directly on the args struct (the handler-level
-// path, complementing the UnmarshalJSON unit tests).
+// TestGetWorkItem_DetailPassedToFormatter verifies that the "full" detail value
+// reaches the formatter correctly via the handler (AGENT-81: plain string path).
 func TestGetWorkItem_DetailPassedToFormatter(t *testing.T) {
 	ctx := context.Background()
 	workItem := &plane.WorkItem{ID: "wi-1", Name: "Test", SequenceID: 1}
@@ -2035,7 +1912,7 @@ func TestGetWorkItem_DetailPassedToFormatter(t *testing.T) {
 			return "name: Test\n", nil
 		},
 	}
-	// Set DetailFull explicitly — the handler should cast it to "full" for the formatter.
+	// Use the string constant directly — detail is a plain string, no coercion.
 	args := GetWorkItemArgs{Identifier: "PROJ-1", Detail: DetailFull}
 
 	result, err := getWorkItem(ctx, args, client, formatter)
@@ -8419,5 +8296,163 @@ func TestAddComment_MarkdownStillConverts(t *testing.T) {
 	}
 	if !strings.Contains(capturedComment, "<em>italic</em>") {
 		t.Errorf("capturedComment = %q, want it to contain <em>italic</em>", capturedComment)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AGENT-81 regression tests — get_work_item strict string enum for detail
+// ---------------------------------------------------------------------------
+
+// TestGetWorkItem_DetailEnum_Summary — AGENT-81: "summary" reaches the formatter as "summary".
+func TestGetWorkItem_DetailEnum_Summary(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	workItem := &plane.WorkItem{ID: "wi-81a", Name: "Test", SequenceID: 1}
+	var capturedDetail string
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return workItem, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			capturedDetail = detail
+			return "name: Test\n", nil
+		},
+	}
+	args := GetWorkItemArgs{Identifier: "PROJ-1", Detail: "summary"}
+
+	// Act
+	result, err := getWorkItem(ctx, args, client, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if capturedDetail != "summary" {
+		t.Errorf("detail passed to formatter = %q, want %q", capturedDetail, "summary")
+	}
+}
+
+// TestGetWorkItem_DetailEnum_Full — AGENT-81: "full" reaches the formatter as "full".
+func TestGetWorkItem_DetailEnum_Full(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	workItem := &plane.WorkItem{ID: "wi-81b", Name: "Test", SequenceID: 2}
+	var capturedDetail string
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return workItem, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			capturedDetail = detail
+			return "name: Test\n", nil
+		},
+	}
+	args := GetWorkItemArgs{Identifier: "PROJ-2", Detail: "full"}
+
+	// Act
+	result, err := getWorkItem(ctx, args, client, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if capturedDetail != "full" {
+		t.Errorf("detail passed to formatter = %q, want %q", capturedDetail, "full")
+	}
+}
+
+// TestGetWorkItem_DetailEnum_SummaryWithLabels — AGENT-81: "summary_with_labels" reaches the formatter correctly.
+func TestGetWorkItem_DetailEnum_SummaryWithLabels(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	workItem := &plane.WorkItem{ID: "wi-81c", Name: "Test", SequenceID: 3}
+	var capturedDetail string
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return workItem, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			capturedDetail = detail
+			return "name: Test\n", nil
+		},
+	}
+	args := GetWorkItemArgs{Identifier: "PROJ-3", Detail: "summary_with_labels"}
+
+	// Act
+	result, err := getWorkItem(ctx, args, client, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if capturedDetail != "summary_with_labels" {
+		t.Errorf("detail passed to formatter = %q, want %q", capturedDetail, "summary_with_labels")
+	}
+}
+
+// TestGetWorkItem_DetailEnum_EmptyDefaultsSummary — AGENT-81: empty/omitted detail defaults to "summary".
+func TestGetWorkItem_DetailEnum_EmptyDefaultsSummary(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	workItem := &plane.WorkItem{ID: "wi-81d", Name: "Test", SequenceID: 4}
+	var capturedDetail string
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return workItem, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			capturedDetail = detail
+			return "name: Test\n", nil
+		},
+	}
+	args := GetWorkItemArgs{Identifier: "PROJ-4"} // Detail is zero-value ""
+
+	// Act
+	result, err := getWorkItem(ctx, args, client, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	if capturedDetail != "summary" {
+		t.Errorf("detail passed to formatter = %q, want %q (empty should default to summary)", capturedDetail, "summary")
+	}
+}
+
+// TestGetWorkItem_DetailSchema_HasDescriptions — AGENT-81: the detail schema must have
+// descriptions on each enum value (embedded in the property description).
+func TestGetWorkItem_DetailSchema_HasDescription(t *testing.T) {
+	// Arrange
+	schema := getWorkItemInputSchema()
+
+	// Act
+	detailProp, ok := schema.Properties["detail"]
+
+	// Assert
+	if !ok {
+		t.Fatal("schema is missing 'detail' property")
+	}
+	if detailProp.Description == "" {
+		t.Error("detail property must have a Description documenting when to use each enum value")
 	}
 }

@@ -355,8 +355,8 @@ type FindMyWorkArgs struct {
 
 // GetWorkItemArgs are the arguments for the get_work_item tool.
 type GetWorkItemArgs struct {
-	Identifier string         `json:"identifier"`
-	Detail     FlexibleDetail `json:"detail"`
+	Identifier string `json:"identifier"`
+	Detail     string `json:"detail"`
 }
 
 // ReportProgressArgs are the arguments for the report_progress tool.
@@ -457,67 +457,13 @@ func (s *FlexibleStringSlice) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// FlexibleDetail is a string that unmarshals from either a JSON string or a
-// JSON boolean, providing parsing fallbacks for the get_work_item detail
-// parameter. Boolean true maps to "full", false maps to "summary".
-// Unrecognized string values silently default to "summary".
-type FlexibleDetail string
-
-// Valid detail levels.
+// Valid detail level constants for get_work_item.
+// These are the canonical string values accepted by the tool schema enum.
 const (
-	DetailSummary           FlexibleDetail = "summary"
-	DetailFull              FlexibleDetail = "full"
-	DetailSummaryWithLabels FlexibleDetail = "summary_with_labels"
+	DetailSummary           = "summary"
+	DetailFull              = "full"
+	DetailSummaryWithLabels = "summary_with_labels"
 )
-
-// UnmarshalJSON implements json.Unmarshaler so FlexibleDetail accepts:
-//   - a JSON boolean: true → "full", false → "summary"
-//   - a JSON string: normalised (case-folded, trimmed) and mapped to a valid
-//     detail level; "true" → "full", "false" → "summary", unrecognised → "summary"
-//   - null / empty → "summary"
-func (d *FlexibleDetail) UnmarshalJSON(data []byte) error {
-	raw := bytes.TrimSpace(data)
-
-	// JSON null or empty
-	if len(raw) == 0 || string(raw) == "null" {
-		*d = DetailSummary
-		return nil
-	}
-
-	// Try boolean first
-	if string(raw) == "true" {
-		*d = DetailFull
-		return nil
-	}
-	if string(raw) == "false" {
-		*d = DetailSummary
-		return nil
-	}
-
-	// Try string
-	var s string
-	if err := json.Unmarshal(raw, &s); err != nil {
-		// Not a valid JSON value — default to summary.
-		*d = DetailSummary
-		return nil
-	}
-
-	*d = normalizeDetail(s)
-	return nil
-}
-
-// normalizeDetail folds a string detail value to a recognised constant.
-func normalizeDetail(s string) FlexibleDetail {
-	s = strings.TrimSpace(s)
-	switch strings.ToLower(s) {
-	case "full", "true":
-		return DetailFull
-	case "summary_with_labels", "summary-with-labels":
-		return DetailSummaryWithLabels
-	default:
-		return DetailSummary
-	}
-}
 
 // ListProjectsArgs are the arguments for the list_projects tool.
 type ListProjectsArgs struct {
@@ -731,7 +677,7 @@ func getWorkItem(ctx context.Context, args GetWorkItemArgs, client planeClient, 
 		detail = DetailSummary
 	}
 
-	yaml, err := formatter.FormatWorkItemYAML(ctx, item, string(detail))
+	yaml, err := formatter.FormatWorkItemYAML(ctx, item, detail)
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to format work item: %v", err)), nil
 	}
@@ -2082,20 +2028,22 @@ func listWorkItemsInputSchema() *jsonschema.Schema {
 }
 
 // getWorkItemInputSchema builds the JSON Schema for the get_work_item tool.
-// It constrains detail to the three valid string enum values.
-// Note: the schema advertises only string enum values, but FlexibleDetail
-// also accepts JSON booleans at parse time (true → "full", false →
-// "summary") as a defensive fallback for clients that serialise boolean
-// parameters.
+// It constrains detail to the three canonical string enum values and adds
+// per-value descriptions so that LLM callers know when to use each level.
 func getWorkItemInputSchema() *jsonschema.Schema {
 	schema, err := jsonschema.For[GetWorkItemArgs](nil)
 	if err != nil {
 		panic(fmt.Sprintf("get_work_item: failed to build input schema: %v", err))
 	}
-	// Constrain detail to the valid enum values.
+	// Constrain detail to the canonical enum values and add a description
+	// so the LLM caller knows when to use which level.
 	for name, prop := range schema.Properties {
 		if name == "detail" {
-			prop.Enum = []any{"summary", "full", "summary_with_labels"}
+			prop.Enum = []any{DetailSummary, DetailFull, DetailSummaryWithLabels}
+			prop.Description = `Level of detail to return. Must be one of:
+  "summary"             — identifier, name, state, priority, and assignees only (default; use for listings and quick lookups)
+  "full"                — all fields including description, labels, relations, dates, and metadata (use when the full context is needed)
+  "summary_with_labels" — summary fields plus labels (use when label context matters but full detail is not required)`
 		}
 	}
 	return schema
