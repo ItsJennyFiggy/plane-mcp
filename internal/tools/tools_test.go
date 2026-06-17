@@ -8345,3 +8345,41 @@ func TestGetWorkItem_DetailSchema_HasDescription(t *testing.T) {
 		t.Error("detail property must have a Description documenting when to use each enum value")
 	}
 }
+
+// TestGetWorkItem_DetailSchema_Optional is the AGENT-81 follow-up regression. The
+// detail parameter is optional (it defaults to "summary"), so it must NOT appear in
+// the schema's required set. Otherwise the SDK rejects ordinary identifier-only
+// calls with "missing properties: [detail]" before the handler's default applies.
+func TestGetWorkItem_DetailSchema_Optional(t *testing.T) {
+	// Arrange
+	schema := getWorkItemInputSchema()
+
+	// Assert: identifier required, detail not.
+	for _, name := range schema.Required {
+		if name == "detail" {
+			t.Errorf("'detail' must not be required; required=%v", schema.Required)
+		}
+	}
+	var hasIdentifier bool
+	for _, name := range schema.Required {
+		if name == "identifier" {
+			hasIdentifier = true
+		}
+	}
+	if !hasIdentifier {
+		t.Errorf("'identifier' must remain required; required=%v", schema.Required)
+	}
+
+	// Act + Assert: a resolved schema must accept an identifier-only instance
+	// (detail omitted) and still reject an out-of-enum detail value.
+	resolved, err := schema.Resolve(nil)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if err := resolved.Validate(map[string]any{"identifier": "PROJ-1"}); err != nil {
+		t.Errorf("identifier-only call must validate (detail is optional), got: %v", err)
+	}
+	if err := resolved.Validate(map[string]any{"identifier": "PROJ-1", "detail": "verbose"}); err == nil {
+		t.Error("an out-of-enum detail value must be rejected by validation")
+	}
+}

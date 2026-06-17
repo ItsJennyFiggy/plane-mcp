@@ -2016,17 +2016,28 @@ func getWorkItemInputSchema() *jsonschema.Schema {
 	if err != nil {
 		panic(fmt.Sprintf("get_work_item: failed to build input schema: %v", err))
 	}
-	// Constrain detail to the canonical enum values and add a description
-	// so the LLM caller knows when to use which level.
+	// Constrain detail to the canonical enum values, document each level, and
+	// give it a default so omitting it is valid (defaults to "summary").
 	for name, prop := range schema.Properties {
 		if name == "detail" {
 			prop.Enum = []any{DetailSummary, DetailFull, DetailSummaryWithLabels}
-			prop.Description = `Level of detail to return. Must be one of:
+			prop.Default = json.RawMessage(`"` + DetailSummary + `"`)
+			prop.Description = `Level of detail to return. Optional; defaults to "summary". One of:
   "summary"             — identifier, name, state, priority, and assignees only (default; use for listings and quick lookups)
   "full"                — all fields including description, labels, relations, dates, and metadata (use when the full context is needed)
   "summary_with_labels" — summary fields plus labels (use when label context matters but full detail is not required)`
 		}
 	}
+	// detail is optional (it has a default), so drop it from the inferred
+	// required set. Without this, the SDK rejects ordinary identifier-only calls
+	// with "missing properties: [detail]" before the handler's default applies.
+	required := schema.Required[:0]
+	for _, name := range schema.Required {
+		if name != "detail" {
+			required = append(required, name)
+		}
+	}
+	schema.Required = required
 	return schema
 }
 
