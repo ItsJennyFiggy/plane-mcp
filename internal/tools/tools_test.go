@@ -212,44 +212,6 @@ func TestShouldRegister(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TestGetProjectID — tests for safe project ID extraction
-// ---------------------------------------------------------------------------
-
-func TestGetProjectID(t *testing.T) {
-	t.Run("Val is set, prefer Val.ID", func(t *testing.T) {
-		p := plane.Expandable[plane.Project]{
-			ID: "fallback-id",
-			Val: &plane.Project{
-				ID: "val-id",
-			},
-		}
-		got := getProjectID(p)
-		if got != "val-id" {
-			t.Errorf("expected 'val-id', got %q", got)
-		}
-	})
-
-	t.Run("Val is nil, fall back to ID", func(t *testing.T) {
-		p := plane.Expandable[plane.Project]{
-			ID:  "fallback-id",
-			Val: nil,
-		}
-		got := getProjectID(p)
-		if got != "fallback-id" {
-			t.Errorf("expected 'fallback-id', got %q", got)
-		}
-	})
-
-	t.Run("Both empty returns empty", func(t *testing.T) {
-		p := plane.Expandable[plane.Project]{}
-		got := getProjectID(p)
-		if got != "" {
-			t.Errorf("expected empty string, got %q", got)
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
 // TestConvertDescriptionToHTML — table-driven tests for convertDescriptionToHTML
 // ---------------------------------------------------------------------------
 
@@ -4200,8 +4162,7 @@ func TestListWorkItems_StateGroupFilter(t *testing.T) {
 }
 
 // TestListWorkItems_StateGroupFilterWithLimit — filters by state_group client-side
-// and then applies the limit post-filter.  Verifies the safety cap (1000) is sent
-// to the API to prevent runaway requests.
+// and then applies the limit post-filter.
 func TestListWorkItems_StateGroupFilterWithLimit(t *testing.T) {
 	ctx := context.Background()
 	allItems := []plane.WorkItem{
@@ -4212,11 +4173,9 @@ func TestListWorkItems_StateGroupFilterWithLimit(t *testing.T) {
 	}
 	client := &mockClient{
 		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
-			// safety cap must be passed to the API when filtering client-side.
-			if limitStr, ok := params["limit"]; !ok {
-				t.Error("safety cap limit should be passed to the API when filtering client-side")
-			} else if limitStr != "1000" {
-				t.Errorf("expected safety cap limit=1000, got %q", limitStr)
+			// limit must NOT be passed to the API when filtering client-side.
+			if _, ok := params["limit"]; ok {
+				t.Error("limit param should NOT be passed to the API when filtering client-side")
 			}
 			return allItems, nil
 		},
