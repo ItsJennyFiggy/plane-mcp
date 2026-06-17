@@ -129,15 +129,6 @@ func shouldRegister(name string, allowedProfiles []string, cfg *config.Config) b
 	return false
 }
 
-// getProjectID safely extracts the project ID from an Expandable[Project],
-// preferring Val.ID if present, falling back to ID.
-func getProjectID(p plane.Expandable[plane.Project]) string {
-	if p.Val != nil {
-		return p.Val.ID
-	}
-	return p.ID
-}
-
 // toolError returns a CallToolResult representing a tool-level error.
 // The error is returned as MCP tool content with IsError=true so the LLM can self-correct.
 func toolError(msg string) *mcp.CallToolResult {
@@ -689,7 +680,7 @@ func listComments(ctx context.Context, args ListCommentsArgs, client planeClient
 		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
 	}
 
-	projectID := getProjectID(item.Project)
+	projectID := item.Project.ID
 	workItemID := item.ID
 
 	comments, err := client.ListComments(ctx, projectID, workItemID)
@@ -769,7 +760,7 @@ func reportProgress(ctx context.Context, args ReportProgressArgs, client planeCl
 		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
 	}
 
-	projectID := getProjectID(item.Project)
+	projectID := item.Project.ID
 
 	if args.Comment != "" {
 		if err := client.CreateWorkItemComment(ctx, projectID, item.ID, args.Comment); err != nil {
@@ -803,7 +794,7 @@ func addComment(ctx context.Context, args AddCommentArgs, client planeClient) (*
 		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
 	}
 
-	projectID := getProjectID(item.Project)
+	projectID := item.Project.ID
 
 	commentHTML := convertDescriptionToHTML(args.Body)
 	if err := client.CreateWorkItemComment(ctx, projectID, item.ID, commentHTML); err != nil {
@@ -825,7 +816,7 @@ func submitForReview(ctx context.Context, args SubmitForReviewArgs, client plane
 		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
 	}
 
-	projectID := getProjectID(item.Project)
+	projectID := item.Project.ID
 
 	inReviewState, err := resolver.ResolveState(ctx, projectID, "In Review")
 	if err != nil {
@@ -896,7 +887,7 @@ func setRelation(ctx context.Context, args SetRelationArgs, client planeClient) 
 		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.RelatedIdentifier, err)), nil
 	}
 
-	err = client.CreateWorkItemRelation(ctx, getProjectID(srcItem.Project), srcItem.ID, args.RelationType, []string{relItem.ID})
+	err = client.CreateWorkItemRelation(ctx, srcItem.Project.ID, srcItem.ID, args.RelationType, []string{relItem.ID})
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to create relation: %v", err)), nil
 	}
@@ -926,7 +917,7 @@ func removeRelation(ctx context.Context, args RemoveRelationArgs, client planeCl
 		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.RelatedIdentifier, err)), nil
 	}
 
-	err = client.RemoveWorkItemRelation(ctx, getProjectID(srcItem.Project), srcItem.ID, relItem.ID)
+	err = client.RemoveWorkItemRelation(ctx, srcItem.Project.ID, srcItem.ID, relItem.ID)
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to remove relation: %v", err)), nil
 	}
@@ -946,12 +937,9 @@ func listRelations(ctx context.Context, args ListRelationsArgs, client planeClie
 		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
 	}
 
-	relations, err := client.ListWorkItemRelations(ctx, getProjectID(srcItem.Project), srcItem.ID)
+	relations, err := client.ListWorkItemRelations(ctx, srcItem.Project.ID, srcItem.ID)
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to list relations: %v", err)), nil
-	}
-	if relations == nil {
-		return toolError("relations data is missing or empty"), nil
 	}
 
 	// Build a project ID -> identifier map from all projects
@@ -992,7 +980,7 @@ func listRelations(ctx context.Context, args ListRelationsArgs, client planeClie
 			// Fetch the related work item to get its name and sequence_id
 			projID := ri.ProjectID
 			if projID == "" {
-				projID = getProjectID(srcItem.Project)
+				projID = srcItem.Project.ID
 			}
 			relatedItem, err := client.GetWorkItem(ctx, projID, ri.IssueID)
 			if err != nil {
@@ -1034,7 +1022,7 @@ func setParent(ctx context.Context, args SetParentArgs, client planeClient) (*mc
 		return toolError(fmt.Sprintf("failed to get parent work item %s: %v", args.ParentIdentifier, err)), nil
 	}
 
-	_, err = client.UpdateWorkItem(ctx, getProjectID(childItem.Project), childItem.ID, map[string]any{"parent": parentItem.ID})
+	_, err = client.UpdateWorkItem(ctx, childItem.Project.ID, childItem.ID, map[string]any{"parent": parentItem.ID})
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to set parent: %v", err)), nil
 	}
@@ -1054,7 +1042,7 @@ func clearParent(ctx context.Context, args ClearParentArgs, client planeClient) 
 		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
 	}
 
-	_, err = client.UpdateWorkItem(ctx, getProjectID(item.Project), item.ID, map[string]any{"parent": nil})
+	_, err = client.UpdateWorkItem(ctx, item.Project.ID, item.ID, map[string]any{"parent": nil})
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to clear parent: %v", err)), nil
 	}
@@ -1085,7 +1073,7 @@ func listChildren(ctx context.Context, args ListChildrenArgs, client planeClient
 	}
 
 	params := map[string]string{"parent": parentItem.ID}
-	children, err := client.ListWorkItems(ctx, getProjectID(parentItem.Project), params)
+	children, err := client.ListWorkItems(ctx, parentItem.Project.ID, params)
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to list children: %v", err)), nil
 	}
@@ -1102,9 +1090,9 @@ func listChildren(ctx context.Context, args ListChildrenArgs, client planeClient
 
 	out := make([]childOut, len(children))
 	for i, c := range children {
-		identifier := projectIDToIdentifier[getProjectID(c.Project)]
+		identifier := projectIDToIdentifier[c.Project.ID]
 		if identifier == "" {
-			identifier = getProjectID(c.Project)
+			identifier = c.Project.ID
 		}
 		out[i] = childOut{
 			Identifier: fmt.Sprintf("%s-%d", identifier, c.SequenceID),
@@ -1140,7 +1128,7 @@ func moveWorkItem(ctx context.Context, args MoveWorkItemArgs, client planeClient
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to get source work item %s: %v", args.Identifier, err)), nil
 	}
-	srcProjectID := getProjectID(srcItem.Project)
+	srcProjectID := srcItem.Project.ID
 
 	// d. Resolve labels from the source item in the target project by name.
 	var labelIDs []string
@@ -1324,7 +1312,6 @@ func moveWorkItem(ctx context.Context, args MoveWorkItemArgs, client planeClient
 		for _, w := range warnings {
 			resultText += fmt.Sprintf("- %s\n", w)
 		}
-		resultText += "Please manually verify the original work item state and delete/link it if necessary.\n"
 	}
 
 	return toolText(resultText), nil
@@ -1714,6 +1701,12 @@ func listWorkItems(ctx context.Context, args ListWorkItemsArgs, client planeClie
 	filterByStateGroup := args.StateGroup != nil && *args.StateGroup != ""
 
 	params := map[string]string{}
+	if !filterByStateGroup {
+		// Forward state_group to the API only when we are NOT filtering client-side.
+		if args.StateGroup != nil && *args.StateGroup != "" {
+			params["state_group"] = *args.StateGroup
+		}
+	}
 	if args.Priority != nil && *args.Priority != "" {
 		params["priority"] = *args.Priority
 	}
@@ -1765,14 +1758,13 @@ func listWorkItems(ctx context.Context, args ListWorkItemsArgs, client planeClie
 		params["labels"] = strings.Join(ids, ",")
 	}
 
-	// When filtering by state_group, do NOT forward state_group to the API.
-	// The Plane API ignores state_group, and listAllGeneric would prematurely
-	// slice unfiltered results when limit is present.  Instead we set a high
-	// safety cap to prevent runaway requests, then apply the user's limit
-	// after client-side filtering.
-	maxItems := 1000
+	// When filtering by state_group, do NOT forward state_group or limit to the
+	// API.  The Plane API ignores state_group, and listAllGeneric would
+	// prematurely slice unfiltered results when limit is present.
 	if filterByStateGroup {
-		params["limit"] = strconv.Itoa(maxItems)
+		if args.Limit != nil && *args.Limit > 0 {
+			// Limit is applied AFTER client-side filtering (see below).
+		}
 	} else {
 		if args.Limit != nil && *args.Limit > 0 {
 			params["limit"] = strconv.Itoa(*args.Limit)
