@@ -112,6 +112,57 @@ func TestParseIdentifier(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// TestGetProjectID — unit tests for the getProjectID helper
+// ---------------------------------------------------------------------------
+
+func TestGetProjectID(t *testing.T) {
+	tests := []struct {
+		name string
+		p    plane.Expandable[plane.Project]
+		want string
+	}{
+		{
+			name: "prefer Val.ID when Val is present",
+			p: plane.Expandable[plane.Project]{
+				ID:  "fallback-id",
+				Val: &plane.Project{ID: "real-id", Name: "TestProj", Identifier: "TEST"},
+			},
+			want: "real-id",
+		},
+		{
+			name: "fallback to ID when Val is nil",
+			p: plane.Expandable[plane.Project]{
+				ID:  "fallback-id",
+				Val: nil,
+			},
+			want: "fallback-id",
+		},
+		{
+			name: "empty when both are empty",
+			p:    plane.Expandable[plane.Project]{},
+			want: "",
+		},
+		{
+			name: "Val.ID is empty string — returns empty",
+			p: plane.Expandable[plane.Project]{
+				ID:  "fallback-id",
+				Val: &plane.Project{Name: "NoID"},
+			},
+			want: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := getProjectID(tc.p)
+			if got != tc.want {
+				t.Errorf("getProjectID(%+v) = %q, want %q", tc.p, got, tc.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // TestShouldRegister — table-driven tests for shouldRegister
 // ---------------------------------------------------------------------------
 
@@ -4173,9 +4224,11 @@ func TestListWorkItems_StateGroupFilterWithLimit(t *testing.T) {
 	}
 	client := &mockClient{
 		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
-			// limit must NOT be passed to the API when filtering client-side.
-			if _, ok := params["limit"]; ok {
-				t.Error("limit param should NOT be passed to the API when filtering client-side")
+			// When filtering client-side, limit must be set to the safety cap of 1000.
+			if lim, ok := params["limit"]; !ok {
+				t.Error("limit param should be set to safety cap (1000) when filtering client-side")
+			} else if lim != "1000" {
+				t.Errorf("limit param should be \"1000\" (safety cap), got %q", lim)
 			}
 			return allItems, nil
 		},
@@ -6549,6 +6602,34 @@ func TestListRelations_RelatedItemNotFound(t *testing.T) {
 	text := result.Content[0].(*mcp.TextContent).Text
 	if !strings.Contains(text, "(unknown)") {
 		t.Errorf("expected '(unknown)' fallback for missing item, got: %s", text)
+	}
+}
+
+func TestListRelations_NilRelations(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{ID: "wi-1", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+		},
+		listWorkItemRelationsFn: func(ctx context.Context, projectID, workItemID string) (*plane.WorkItemRelations, error) {
+			return nil, nil
+		},
+	}
+	args := ListRelationsArgs{Identifier: "PROJ-1"}
+
+	result, err := listRelations(ctx, args, client)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected IsError=true when relations is nil")
+	}
+	textContent, ok := result.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent, got %T", result.Content[0])
+	}
+	if !strings.Contains(textContent.Text, "relations data is missing or empty") {
+		t.Errorf("expected 'relations data is missing or empty' in error, got: %s", textContent.Text)
 	}
 }
 
