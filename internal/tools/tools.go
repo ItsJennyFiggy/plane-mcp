@@ -149,6 +149,15 @@ func toolText(text string) *mcp.CallToolResult {
 	}
 }
 
+// getProjectID safely extracts the project ID from an Expandable[Project],
+// preferring Val.ID if Val is present, falling back to the ID field.
+func getProjectID(p plane.Expandable[plane.Project]) string {
+	if p.Val != nil {
+		return p.Val.ID
+	}
+	return p.ID
+}
+
 // Inline-span and list-item patterns used by the Markdown converter.
 var (
 	inlineCodeRe  = regexp.MustCompile("`([^`]+)`")
@@ -680,7 +689,7 @@ func listComments(ctx context.Context, args ListCommentsArgs, client planeClient
 		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
 	}
 
-	projectID := item.Project.ID
+	projectID := getProjectID(item.Project)
 	workItemID := item.ID
 
 	comments, err := client.ListComments(ctx, projectID, workItemID)
@@ -729,7 +738,7 @@ func getLastComment(ctx context.Context, args GetLastCommentArgs, client planeCl
 		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
 	}
 
-	comment, err := client.GetLastComment(ctx, item.Project.ID, item.ID)
+	comment, err := client.GetLastComment(ctx, getProjectID(item.Project), item.ID)
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to fetch last comment for %s: %v", args.Identifier, err)), nil
 	}
@@ -760,7 +769,7 @@ func reportProgress(ctx context.Context, args ReportProgressArgs, client planeCl
 		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
 	}
 
-	projectID := item.Project.ID
+	projectID := getProjectID(item.Project)
 
 	if args.Comment != "" {
 		if err := client.CreateWorkItemComment(ctx, projectID, item.ID, args.Comment); err != nil {
@@ -794,7 +803,7 @@ func addComment(ctx context.Context, args AddCommentArgs, client planeClient) (*
 		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
 	}
 
-	projectID := item.Project.ID
+	projectID := getProjectID(item.Project)
 
 	commentHTML := convertDescriptionToHTML(args.Body)
 	if err := client.CreateWorkItemComment(ctx, projectID, item.ID, commentHTML); err != nil {
@@ -816,7 +825,7 @@ func submitForReview(ctx context.Context, args SubmitForReviewArgs, client plane
 		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
 	}
 
-	projectID := item.Project.ID
+	projectID := getProjectID(item.Project)
 
 	inReviewState, err := resolver.ResolveState(ctx, projectID, "In Review")
 	if err != nil {
@@ -887,7 +896,7 @@ func setRelation(ctx context.Context, args SetRelationArgs, client planeClient) 
 		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.RelatedIdentifier, err)), nil
 	}
 
-	err = client.CreateWorkItemRelation(ctx, srcItem.Project.ID, srcItem.ID, args.RelationType, []string{relItem.ID})
+	err = client.CreateWorkItemRelation(ctx, getProjectID(srcItem.Project), srcItem.ID, args.RelationType, []string{relItem.ID})
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to create relation: %v", err)), nil
 	}
@@ -917,7 +926,7 @@ func removeRelation(ctx context.Context, args RemoveRelationArgs, client planeCl
 		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.RelatedIdentifier, err)), nil
 	}
 
-	err = client.RemoveWorkItemRelation(ctx, srcItem.Project.ID, srcItem.ID, relItem.ID)
+	err = client.RemoveWorkItemRelation(ctx, getProjectID(srcItem.Project), srcItem.ID, relItem.ID)
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to remove relation: %v", err)), nil
 	}
@@ -937,7 +946,7 @@ func listRelations(ctx context.Context, args ListRelationsArgs, client planeClie
 		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
 	}
 
-	relations, err := client.ListWorkItemRelations(ctx, srcItem.Project.ID, srcItem.ID)
+	relations, err := client.ListWorkItemRelations(ctx, getProjectID(srcItem.Project), srcItem.ID)
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to list relations: %v", err)), nil
 	}
@@ -980,7 +989,7 @@ func listRelations(ctx context.Context, args ListRelationsArgs, client planeClie
 			// Fetch the related work item to get its name and sequence_id
 			projID := ri.ProjectID
 			if projID == "" {
-				projID = srcItem.Project.ID
+				projID = getProjectID(srcItem.Project)
 			}
 			relatedItem, err := client.GetWorkItem(ctx, projID, ri.IssueID)
 			if err != nil {
@@ -1022,7 +1031,7 @@ func setParent(ctx context.Context, args SetParentArgs, client planeClient) (*mc
 		return toolError(fmt.Sprintf("failed to get parent work item %s: %v", args.ParentIdentifier, err)), nil
 	}
 
-	_, err = client.UpdateWorkItem(ctx, childItem.Project.ID, childItem.ID, map[string]any{"parent": parentItem.ID})
+	_, err = client.UpdateWorkItem(ctx, getProjectID(childItem.Project), childItem.ID, map[string]any{"parent": parentItem.ID})
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to set parent: %v", err)), nil
 	}
@@ -1042,7 +1051,7 @@ func clearParent(ctx context.Context, args ClearParentArgs, client planeClient) 
 		return toolError(fmt.Sprintf("failed to get work item %s: %v", args.Identifier, err)), nil
 	}
 
-	_, err = client.UpdateWorkItem(ctx, item.Project.ID, item.ID, map[string]any{"parent": nil})
+	_, err = client.UpdateWorkItem(ctx, getProjectID(item.Project), item.ID, map[string]any{"parent": nil})
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to clear parent: %v", err)), nil
 	}
@@ -1073,7 +1082,7 @@ func listChildren(ctx context.Context, args ListChildrenArgs, client planeClient
 	}
 
 	params := map[string]string{"parent": parentItem.ID}
-	children, err := client.ListWorkItems(ctx, parentItem.Project.ID, params)
+	children, err := client.ListWorkItems(ctx, getProjectID(parentItem.Project), params)
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to list children: %v", err)), nil
 	}
@@ -1090,9 +1099,9 @@ func listChildren(ctx context.Context, args ListChildrenArgs, client planeClient
 
 	out := make([]childOut, len(children))
 	for i, c := range children {
-		identifier := projectIDToIdentifier[c.Project.ID]
+		identifier := projectIDToIdentifier[getProjectID(c.Project)]
 		if identifier == "" {
-			identifier = c.Project.ID
+			identifier = getProjectID(c.Project)
 		}
 		out[i] = childOut{
 			Identifier: fmt.Sprintf("%s-%d", identifier, c.SequenceID),
@@ -1128,7 +1137,7 @@ func moveWorkItem(ctx context.Context, args MoveWorkItemArgs, client planeClient
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to get source work item %s: %v", args.Identifier, err)), nil
 	}
-	srcProjectID := srcItem.Project.ID
+	srcProjectID := getProjectID(srcItem.Project)
 
 	// d. Resolve labels from the source item in the target project by name.
 	var labelIDs []string
