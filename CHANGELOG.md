@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.1](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.12.0...v1.12.1) (2026-06-17)
+
+
+### Bug Fixes
+
+* **ci:** remove non-existent ko-build/ko-action step ([#64](https://github.com/ItsJennyFiggy/plane-mcp/issues/64)) ([9d33305](https://github.com/ItsJennyFiggy/plane-mcp/commit/9d33305a721095de6ba01b721ce4ec6b596b7c73))
+
 ## [1.12.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.11.1...v1.12.0) (2026-06-17)
 
 
