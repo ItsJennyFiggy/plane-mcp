@@ -381,9 +381,9 @@ type AddCommentArgs struct {
 
 // SetRelationArgs are the arguments for the set_relation tool.
 type SetRelationArgs struct {
-	Identifier         string `json:"identifier"`
-	RelationType       string `json:"relation_type"`
-	RelatedIdentifier  string `json:"related_identifier"`
+	Identifier        string `json:"identifier"`
+	RelationType      string `json:"relation_type"`
+	RelatedIdentifier string `json:"related_identifier"`
 }
 
 // RemoveRelationArgs are the arguments for the remove_relation tool.
@@ -465,8 +465,8 @@ type FlexibleDetail string
 
 // Valid detail levels.
 const (
-	DetailSummary          FlexibleDetail = "summary"
-	DetailFull             FlexibleDetail = "full"
+	DetailSummary           FlexibleDetail = "summary"
+	DetailFull              FlexibleDetail = "full"
 	DetailSummaryWithLabels FlexibleDetail = "summary_with_labels"
 )
 
@@ -2062,7 +2062,11 @@ func listWorkItemsInputSchema() *jsonschema.Schema {
 }
 
 // getWorkItemInputSchema builds the JSON Schema for the get_work_item tool.
-// It constrains detail to the three valid enum values.
+// It constrains detail to the three valid string enum values.
+// Note: the schema advertises only string enum values, but FlexibleDetail
+// also accepts JSON booleans at parse time (true → "full", false →
+// "summary") as a defensive fallback for clients that serialise boolean
+// parameters.
 func getWorkItemInputSchema() *jsonschema.Schema {
 	schema, err := jsonschema.For[GetWorkItemArgs](nil)
 	if err != nil {

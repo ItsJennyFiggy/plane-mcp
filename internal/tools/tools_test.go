@@ -2016,9 +2016,11 @@ func TestFlexibleDetail_UnmarshalJSON_SummaryWithLabelsHyphenVariant(t *testing.
 // getWorkItem detail normalisation integration tests
 // ---------------------------------------------------------------------------
 
-// TestGetWorkItem_DetailNormalisedToFormatter verifies that the detail value
-// passed to the formatter is normalised (not raw user input).
-func TestGetWorkItem_DetailBoolTrueMapsToFull(t *testing.T) {
+// TestGetWorkItem_DetailPassedToFormatter verifies that a non-default
+// FlexibleDetail (DetailFull) reaches the formatter as the normalised
+// string "full" when set directly on the args struct (the handler-level
+// path, complementing the UnmarshalJSON unit tests).
+func TestGetWorkItem_DetailPassedToFormatter(t *testing.T) {
 	ctx := context.Background()
 	workItem := &plane.WorkItem{ID: "wi-1", Name: "Test", SequenceID: 1}
 	var capturedDetail string
@@ -2033,8 +2035,8 @@ func TestGetWorkItem_DetailBoolTrueMapsToFull(t *testing.T) {
 			return "name: Test\n", nil
 		},
 	}
-	// Detail set to "" (zero value) — handler default kicks in
-	args := GetWorkItemArgs{Identifier: "PROJ-1"}
+	// Set DetailFull explicitly — the handler should cast it to "full" for the formatter.
+	args := GetWorkItemArgs{Identifier: "PROJ-1", Detail: DetailFull}
 
 	result, err := getWorkItem(ctx, args, client, formatter)
 	if err != nil {
@@ -2043,8 +2045,8 @@ func TestGetWorkItem_DetailBoolTrueMapsToFull(t *testing.T) {
 	if result.IsError {
 		t.Error("expected IsError=false")
 	}
-	if capturedDetail != "summary" {
-		t.Errorf("expected detail='summary' (default), got %q", capturedDetail)
+	if capturedDetail != "full" {
+		t.Errorf("expected detail='full', got %q", capturedDetail)
 	}
 }
 
@@ -2630,9 +2632,9 @@ func TestGetWorkItem_SchemaDetailEnum(t *testing.T) {
 	}
 
 	expectedEnum := map[string]bool{
-		"summary":              true,
-		"full":                 true,
-		"summary_with_labels":  true,
+		"summary":             true,
+		"full":                true,
+		"summary_with_labels": true,
 	}
 	for _, e := range detailProp.Enum {
 		s, ok := e.(string)
@@ -7339,11 +7341,11 @@ func TestMoveWorkItem_SourceItemNotFound(t *testing.T) {
 func TestMoveWorkItem_TargetCreationError(t *testing.T) {
 	ctx := context.Background()
 	srcItem := &plane.WorkItem{
-		ID:       "src-wi",
-		Name:     "Test Item",
+		ID:         "src-wi",
+		Name:       "Test Item",
 		SequenceID: 1,
-		Project:  plane.Expandable[plane.Project]{ID: "src-proj"},
-		State:    plane.Expandable[plane.State]{ID: "state-1", Val: &plane.State{Name: "Todo", Group: "unstarted"}},
+		Project:    plane.Expandable[plane.Project]{ID: "src-proj"},
+		State:      plane.Expandable[plane.State]{ID: "state-1", Val: &plane.State{Name: "Todo", Group: "unstarted"}},
 	}
 	client := &mockClient{
 		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
