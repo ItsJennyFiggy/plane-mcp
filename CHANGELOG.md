@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.2](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.12.1...v1.12.2) (2026-06-18)
+
+
+### Bug Fixes
+
+* **server:** add graceful shutdown via signal-aware context ([#66](https://github.com/ItsJennyFiggy/plane-mcp/issues/66)) ([c2abd73](https://github.com/ItsJennyFiggy/plane-mcp/commit/c2abd739add124e27f8ced942c7da5906b23d94e))
+
 ## [1.12.1](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.12.0...v1.12.1) (2026-06-17)
 
 
