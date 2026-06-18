@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"os/signal"
+	"syscall"
 
 	"github.com/ItsJennyFiggy/plane-mcp/internal/config"
 	"github.com/ItsJennyFiggy/plane-mcp/internal/plane"
@@ -52,8 +55,15 @@ func main() {
 		log.Fatalf("Server startup failed: %v", err)
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	log.Println("Starting plane-mcp server on stdio transport...")
-	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
+	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
+		if errors.Is(err, mcp.ErrConnectionClosed) || errors.Is(err, context.Canceled) {
+			log.Println("Server stopped")
+			return
+		}
 		log.Fatalf("Server run failed: %v", err)
 	}
 	log.Println("Server stopped")
