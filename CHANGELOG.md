@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.12.2...v1.13.0) (2026-06-18)
+
+
+### Features
+
+* **tools:** add reviewer tool-scoping profile (read + comment-back only) ([#68](https://github.com/ItsJennyFiggy/plane-mcp/issues/68)) ([6e9f2da](https://github.com/ItsJennyFiggy/plane-mcp/commit/6e9f2da436389baaf0d0ed25f7ed0b481f75c817))
+
 ## [1.12.2](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.12.1...v1.12.2) (2026-06-18)
 
 
