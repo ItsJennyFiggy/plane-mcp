@@ -17,7 +17,7 @@ A custom Go-native Model Context Protocol (MCP) server that integrates directly 
     *   `report_progress`: Appends comments and transitions states safely in a single action.
     *   `submit_for_review`: Attaches PR links and flags tickets for review.
     *   `create_task`: Resolves labels/assignees by name and registers new tasks.
-*   **Tier-2 CRUD Tools (Gated)**: Low-level operations (`update_work_item`, `list_comments`, `get_last_comment`, comment lists, link creation) registered only under the `planner` or `full` profiles.
+*   **Tier-2 CRUD Tools (Gated)**: Low-level operations (`update_work_item`, relation/link management) registered only under the `planner` or `full` profiles; read-only comment tools (`list_comments`, `get_last_comment`) also registered under the `reviewer` profile.
 *   **Off-Network Tunnel Ingress**: Supports Cloudflare Access service tokens via headers to route requests securely to local/private Plane deployments.
 
 ---

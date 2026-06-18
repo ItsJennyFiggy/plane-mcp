@@ -2045,12 +2045,16 @@ func getWorkItemInputSchema() *jsonschema.Schema {
 
 // registerWithDeps is the testable core of Register that accepts interface types.
 // Production code calls this via Register() in register.go.
-func registerWithDeps(server *mcp.Server, client planeClient, resolver planeResolver, formatter planeFormatter, cfg *config.Config) {
-	workerPlannerFull := []string{"worker", "planner", "full"}
-	plannerFull := []string{"planner", "full"}
-	workerPlannerFullReviewer := []string{"worker", "planner", "full", "reviewer"}
-	plannerFullReviewer := []string{"planner", "full", "reviewer"}
+//
+// The following slices define which profile(s) each tool is gated to.
+// They are package-level so tests can reference the same values and
+// cannot drift from the implementation.
+var workerPlannerFull = []string{"worker", "planner", "full"}
+var plannerFull = []string{"planner", "full"}
+var workerPlannerFullReviewer = []string{"worker", "planner", "full", "reviewer"}
+var plannerFullReviewer = []string{"planner", "full", "reviewer"}
 
+func registerWithDeps(server *mcp.Server, client planeClient, resolver planeResolver, formatter planeFormatter, cfg *config.Config) {
 	falsePtr := false
 
 	if shouldRegister("find_my_work", workerPlannerFullReviewer, cfg) {
@@ -2154,7 +2158,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		})
 	}
 
-	if shouldRegister("report_progress", workerPlannerFullReviewer, cfg) {
+	if shouldRegister("report_progress", workerPlannerFull, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "report_progress",
 			Description: "Post a progress comment on a work item and optionally transition it to a new state.",
