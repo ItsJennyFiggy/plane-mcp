@@ -37,8 +37,8 @@ func Load() (*Config, error) {
 		profile = "full"
 	}
 	profile = strings.ToLower(strings.TrimSpace(profile))
-	if profile != "worker" && profile != "planner" && profile != "full" {
-		return nil, fmt.Errorf("PLANE_MCP_PROFILE must be one of 'worker', 'planner', or 'full', got '%s'", profile)
+	if profile != "worker" && profile != "planner" && profile != "full" && profile != "reviewer" {
+		return nil, fmt.Errorf("PLANE_MCP_PROFILE must be one of 'worker', 'planner', 'reviewer', or 'full', got '%s'", profile)
 	}
 
 	var tools []string

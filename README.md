@@ -7,7 +7,7 @@ A custom Go-native Model Context Protocol (MCP) server that integrates directly 
 ## 🎯 Features & Scope
 
 *   **Stdio Transport**: Communicates natively over standard I/O (stdio) to plug into Claude Desktop or container runtimes.
-*   **Tool Scoping Profiles**: Restricts the exposed tool surface dynamically via `PLANE_MCP_PROFILE=worker|planner|full` (e.g., preventing worker agents from calling destructive or planning tools).
+*   **Tool Scoping Profiles**: Restricts the exposed tool surface dynamically via `PLANE_MCP_PROFILE=worker|planner|reviewer|full` (e.g., preventing worker agents from calling destructive or planning tools, or restricting reviewers to read + comment-back only).
 *   **Token-Efficient Payload Serialization**: Serializes work items into compact formats, resolves UUID-valued fields (states, assignees, labels) to human-readable names, converts description HTML to Markdown, and strips nulls to optimize LLM context usage.
 *   **Tier-1 Semantic Tools**: High-level, developer-oriented operations:
     *   `find_my_work`: Lists items assigned to the current caller.

@@ -246,6 +246,20 @@ func TestShouldRegister(t *testing.T) {
 			cfg:             &config.Config{PlaneMCPProfile: "planner"},
 			want:            false,
 		},
+		{
+			name:            "reviewer profile match — reviewer-allowed slice",
+			toolName:        "get_work_item",
+			allowedProfiles: []string{"worker", "planner", "full", "reviewer"},
+			cfg:             &config.Config{PlaneMCPProfile: "reviewer"},
+			want:            true,
+		},
+		{
+			name:            "reviewer profile mismatch — plannerFull tool",
+			toolName:        "create_task",
+			allowedProfiles: []string{"planner", "full"},
+			cfg:             &config.Config{PlaneMCPProfile: "reviewer"},
+			want:            false,
+		},
 	}
 
 	for _, tc := range tests {
@@ -2045,6 +2059,72 @@ func TestRegisterWithDeps_ExplicitToolList(t *testing.T) {
 	// Act
 	registerWithDeps(server, client, resolver, formatter, cfg)
 	// Only get_work_item should be registered — no panic.
+}
+
+func TestRegisterWithDeps_ReviewerProfile(t *testing.T) {
+	// Arrange
+	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
+	client := &mockClient{}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{}
+	cfg := &config.Config{PlaneMCPProfile: "reviewer"}
+
+	// Act
+	registerWithDeps(server, client, resolver, formatter, cfg)
+	// No panic = success
+
+	// Assert — verify shouldRegister decisions for each tool under reviewer profile.
+	// After the code change, intended tools will have "reviewer" in their allowed-profiles
+	// slice; excluded tools will not.
+	workerPlannerFullReviewer := []string{"worker", "planner", "full", "reviewer"}
+	plannerFullReviewer := []string{"planner", "full", "reviewer"}
+
+	// Tools that currently use workerPlannerFull and get "reviewer" added.
+	workerPlannerIntended := []string{
+		"find_my_work", "list_projects", "list_labels", "list_states",
+		"get_work_item", "report_progress", "add_comment",
+	}
+	// Tools that currently use plannerFull and get "reviewer" added.
+	plannerIntended := []string{
+		"list_work_items", "list_comments", "get_last_comment",
+	}
+
+	for _, name := range workerPlannerIntended {
+		if !shouldRegister(name, workerPlannerFullReviewer, cfg) {
+			t.Errorf("reviewer profile: shouldRegister(%q, %v, cfg) = false, want true", name, workerPlannerFullReviewer)
+		}
+	}
+	for _, name := range plannerIntended {
+		if !shouldRegister(name, plannerFullReviewer, cfg) {
+			t.Errorf("reviewer profile: shouldRegister(%q, %v, cfg) = false, want true", name, plannerFullReviewer)
+		}
+	}
+
+	// Excluded tools — verify they are NOT registered under reviewer.
+	// These use their existing slices (workerPlannerFull / plannerFull) which do NOT include "reviewer".
+	workerPlannerFull := []string{"worker", "planner", "full"}
+	plannerFull := []string{"planner", "full"}
+
+	excludedWorkerPlanner := []string{
+		"add_label", "remove_label", "submit_for_review",
+	}
+	excludedPlannerOnly := []string{
+		"create_task", "assign_work_item", "update_work_item",
+		"set_relation", "remove_relation", "list_relations",
+		"set_parent", "clear_parent", "list_children",
+		"move_work_item", "search_work_items",
+	}
+
+	for _, name := range excludedWorkerPlanner {
+		if shouldRegister(name, workerPlannerFull, cfg) {
+			t.Errorf("reviewer profile: shouldRegister(%q, %v, cfg) = true, want false (excluded)", name, workerPlannerFull)
+		}
+	}
+	for _, name := range excludedPlannerOnly {
+		if shouldRegister(name, plannerFull, cfg) {
+			t.Errorf("reviewer profile: shouldRegister(%q, %v, cfg) = true, want false (excluded)", name, plannerFull)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

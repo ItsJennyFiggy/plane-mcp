@@ -2048,10 +2048,12 @@ func getWorkItemInputSchema() *jsonschema.Schema {
 func registerWithDeps(server *mcp.Server, client planeClient, resolver planeResolver, formatter planeFormatter, cfg *config.Config) {
 	workerPlannerFull := []string{"worker", "planner", "full"}
 	plannerFull := []string{"planner", "full"}
+	workerPlannerFullReviewer := []string{"worker", "planner", "full", "reviewer"}
+	plannerFullReviewer := []string{"planner", "full", "reviewer"}
 
 	falsePtr := false
 
-	if shouldRegister("find_my_work", workerPlannerFull, cfg) {
+	if shouldRegister("find_my_work", workerPlannerFullReviewer, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "find_my_work",
 			Description: "List all work items assigned to the current user, optionally filtered by project and state group.",
@@ -2062,7 +2064,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		})
 	}
 
-	if shouldRegister("list_projects", workerPlannerFull, cfg) {
+	if shouldRegister("list_projects", workerPlannerFullReviewer, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "list_projects",
 			Description: "List all projects, returning each project's identifier, name, and id.",
@@ -2073,7 +2075,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		})
 	}
 
-	if shouldRegister("list_labels", workerPlannerFull, cfg) {
+	if shouldRegister("list_labels", workerPlannerFullReviewer, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "list_labels",
 			Description: "List all labels in a project, returning each label's id, name, and color.",
@@ -2084,7 +2086,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		})
 	}
 
-	if shouldRegister("list_states", workerPlannerFull, cfg) {
+	if shouldRegister("list_states", workerPlannerFullReviewer, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "list_states",
 			Description: "List all states in a project, returning each state's id, name, and group.",
@@ -2140,7 +2142,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		})
 	}
 
-	if shouldRegister("get_work_item", workerPlannerFull, cfg) {
+	if shouldRegister("get_work_item", workerPlannerFullReviewer, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "get_work_item",
 			Description: "Retrieve a single work item by its project-prefixed identifier (e.g. PROJ-123).",
@@ -2152,7 +2154,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		})
 	}
 
-	if shouldRegister("report_progress", workerPlannerFull, cfg) {
+	if shouldRegister("report_progress", workerPlannerFullReviewer, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "report_progress",
 			Description: "Post a progress comment on a work item and optionally transition it to a new state.",
@@ -2163,7 +2165,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		})
 	}
 
-	if shouldRegister("add_comment", workerPlannerFull, cfg) {
+	if shouldRegister("add_comment", workerPlannerFullReviewer, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "add_comment",
 			Description: "Add a comment to a work item by its project-prefixed identifier (e.g. PROJ-123). The body accepts Markdown and is converted to Plane-native rich text.",
@@ -2197,7 +2199,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		})
 	}
 
-	if shouldRegister("list_work_items", plannerFull, cfg) {
+	if shouldRegister("list_work_items", plannerFullReviewer, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "list_work_items",
 			Description: "List work items in a project with optional filters for state group, state, priority, type, module, assignees, labels, and limit. Assignees, labels, states, and modules may be specified by name or ID and are resolved automatically.",
@@ -2220,7 +2222,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		})
 	}
 
-	if shouldRegister("list_comments", plannerFull, cfg) {
+	if shouldRegister("list_comments", plannerFullReviewer, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "list_comments",
 			Description: "List all comments on a work item by its project-prefixed identifier (e.g. PROJ-123), sorted by creation time ascending. Returns YAML with author, created_at, and body (HTML converted to Markdown) for each comment.",
@@ -2231,7 +2233,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		})
 	}
 
-	if shouldRegister("get_last_comment", plannerFull, cfg) {
+	if shouldRegister("get_last_comment", plannerFullReviewer, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "get_last_comment",
 			Description: "Retrieve the single most recently created comment on a work item by its project-prefixed identifier (e.g. PROJ-123). Returns YAML with author, created_at, and body (HTML converted to Markdown). If no comments exist, returns 'null'.",

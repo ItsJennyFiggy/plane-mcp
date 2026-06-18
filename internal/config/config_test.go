@@ -78,7 +78,7 @@ func TestLoad_InvalidProfile(t *testing.T) {
 }
 
 func TestLoad_ValidProfiles(t *testing.T) {
-	validProfiles := []string{"worker", "planner", "full"}
+	validProfiles := []string{"worker", "planner", "full", "reviewer"}
 
 	for _, profile := range validProfiles {
 		// Arrange
