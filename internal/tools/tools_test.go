@@ -246,6 +246,20 @@ func TestShouldRegister(t *testing.T) {
 			cfg:             &config.Config{PlaneMCPProfile: "planner"},
 			want:            false,
 		},
+		{
+			name:            "reviewer profile match — reviewer-allowed slice",
+			toolName:        "get_work_item",
+			allowedProfiles: []string{"worker", "planner", "full", "reviewer"},
+			cfg:             &config.Config{PlaneMCPProfile: "reviewer"},
+			want:            true,
+		},
+		{
+			name:            "reviewer profile mismatch — plannerFull tool",
+			toolName:        "create_task",
+			allowedProfiles: []string{"planner", "full"},
+			cfg:             &config.Config{PlaneMCPProfile: "reviewer"},
+			want:            false,
+		},
 	}
 
 	for _, tc := range tests {
@@ -2045,6 +2059,73 @@ func TestRegisterWithDeps_ExplicitToolList(t *testing.T) {
 	// Act
 	registerWithDeps(server, client, resolver, formatter, cfg)
 	// Only get_work_item should be registered — no panic.
+}
+
+func TestRegisterWithDeps_ReviewerProfile(t *testing.T) {
+	// Arrange
+	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
+	client := &mockClient{}
+	resolver := &mockResolver{}
+	formatter := &mockFormatter{}
+	cfg := &config.Config{PlaneMCPProfile: "reviewer"}
+
+	// Act — must not panic
+	registerWithDeps(server, client, resolver, formatter, cfg)
+
+	// Assert tool registration via shouldRegister.
+	//
+	// NOTE on SDK introspection: the go-sdk mcp.Server does not expose its
+	// registered tool list publicly — the tools field is unexported and
+	// there is no public ListTools() method on the Server type. We therefore
+	// verify registration indirectly by calling shouldRegister with the same
+	// package-level profile slices that registerWithDeps uses. Because the
+	// slices are now package-level (not redefined inside the function or
+	// test), the test references the identical values as the implementation
+	// and cannot drift from it.
+	//
+	// The 9 INTENDED tools under the reviewer profile:
+	intendedByWorkerPlanner := []string{
+		"find_my_work", "list_projects", "list_labels", "list_states",
+		"get_work_item", "add_comment",
+	}
+	intendedByPlanner := []string{
+		"list_work_items", "list_comments", "get_last_comment",
+	}
+	// Total intended = 9
+
+	for _, name := range intendedByWorkerPlanner {
+		if !shouldRegister(name, workerPlannerFullReviewer, cfg) {
+			t.Errorf("reviewer profile: shouldRegister(%q, %v, cfg) = false, want true", name, workerPlannerFullReviewer)
+		}
+	}
+	for _, name := range intendedByPlanner {
+		if !shouldRegister(name, plannerFullReviewer, cfg) {
+			t.Errorf("reviewer profile: shouldRegister(%q, %v, cfg) = false, want true", name, plannerFullReviewer)
+		}
+	}
+
+	// The 15 EXCLUDED tools (no "reviewer" in their allowed profiles):
+	excludedByWorkerPlanner := []string{
+		"report_progress", "add_label", "remove_label", "submit_for_review",
+	}
+	excludedByPlanner := []string{
+		"create_task", "assign_work_item", "update_work_item",
+		"set_relation", "remove_relation", "list_relations",
+		"set_parent", "clear_parent", "list_children",
+		"move_work_item", "search_work_items",
+	}
+	// Total excluded = 15
+
+	for _, name := range excludedByWorkerPlanner {
+		if shouldRegister(name, workerPlannerFull, cfg) {
+			t.Errorf("reviewer profile: shouldRegister(%q, %v, cfg) = true, want false (excluded)", name, workerPlannerFull)
+		}
+	}
+	for _, name := range excludedByPlanner {
+		if shouldRegister(name, plannerFull, cfg) {
+			t.Errorf("reviewer profile: shouldRegister(%q, %v, cfg) = true, want false (excluded)", name, plannerFull)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
