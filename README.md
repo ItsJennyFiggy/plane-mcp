@@ -74,7 +74,7 @@ docker pull ghcr.io/itsjennyfiggy/plane-mcp:latest
       "args": [],
       "env": {
         "PLANE_API_KEY": "your-plane-api-key",
-        "PLANE_BASE_URL": "https://app.plane.so",
+        "PLANE_BASE_URL": "https://plane.example.com",
         "PLANE_WORKSPACE_SLUG": "your-workspace-slug",
         "PLANE_MCP_PROFILE": "full"
       }
@@ -100,7 +100,7 @@ docker pull ghcr.io/itsjennyfiggy/plane-mcp:latest
       ],
       "env": {
         "PLANE_API_KEY": "your-plane-api-key",
-        "PLANE_BASE_URL": "https://app.plane.so",
+        "PLANE_BASE_URL": "https://plane.example.com",
         "PLANE_WORKSPACE_SLUG": "your-workspace-slug",
         "PLANE_MCP_PROFILE": "full"
       }
@@ -123,7 +123,7 @@ All configuration is supplied via environment variables.
 | Variable | Required | Default | Description |
 |---|:---:|---|---|
 | `PLANE_API_KEY` | ✅ | — | Personal Access Token for the Plane API. |
-| `PLANE_BASE_URL` | ✅ | — | Base URL of your Plane instance (e.g. `https://app.plane.so`, or your self-hosted URL). |
+| `PLANE_BASE_URL` | ✅ | — | Base URL of your Plane instance (e.g. `https://plane.example.com`, or your self-hosted URL). |
 | `PLANE_WORKSPACE_SLUG` | ✅ | — | The slug of the workspace to operate in. |
 | `PLANE_MCP_PROFILE` | | `full` | Tool scoping profile: `worker`, `planner`, `reviewer`, or `full`. See [Tool Scoping Profiles](#tool-scoping-profiles). |
 | `PLANE_MCP_TOOLS` | | — | Comma-separated explicit tool allowlist (e.g. `find_my_work,get_work_item`). When set, it **overrides** `PLANE_MCP_PROFILE` and only the listed tools are registered. |
