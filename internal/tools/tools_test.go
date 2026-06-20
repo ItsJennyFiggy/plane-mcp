@@ -2033,8 +2033,10 @@ func TestRegisterWithDeps_FullProfile(t *testing.T) {
 }
 
 func TestRegisterWithDeps_WorkerProfile(t *testing.T) {
-	// Arrange — worker profile should register 8 tools (add_label and remove_label
-	// are excluded; they are planner+full only).
+	// Arrange — worker profile registers 8 tools:
+	// find_my_work, list_projects, list_labels, list_states,
+	// get_work_item, report_progress, add_comment, submit_for_review.
+	// add_label and remove_label are excluded (planner+full only).
 	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
 	client := &mockClient{}
 	resolver := &mockResolver{}
