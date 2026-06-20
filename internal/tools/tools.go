@@ -2101,7 +2101,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		})
 	}
 
-	if shouldRegister("add_label", workerPlannerFull, cfg) {
+	if shouldRegister("add_label", plannerFull, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "add_label",
 			Description: "Attach a label (by name or id) to a work item. Idempotent — returns success if the label is already attached.",
@@ -2112,7 +2112,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		})
 	}
 
-	if shouldRegister("remove_label", workerPlannerFull, cfg) {
+	if shouldRegister("remove_label", plannerFull, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "remove_label",
 			Description: "Detach a label (by name or id) from a work item. Idempotent — returns success if the label is already absent.",

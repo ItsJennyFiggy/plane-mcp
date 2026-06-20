@@ -2033,7 +2033,8 @@ func TestRegisterWithDeps_FullProfile(t *testing.T) {
 }
 
 func TestRegisterWithDeps_WorkerProfile(t *testing.T) {
-	// Arrange — worker profile should register 5 tools (not create_task)
+	// Arrange — worker profile should register 8 tools (add_label and remove_label
+	// are excluded; they are planner+full only).
 	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
 	client := &mockClient{}
 	resolver := &mockResolver{}
@@ -2106,10 +2107,10 @@ func TestRegisterWithDeps_ReviewerProfile(t *testing.T) {
 
 	// The 15 EXCLUDED tools (no "reviewer" in their allowed profiles):
 	excludedByWorkerPlanner := []string{
-		"report_progress", "add_label", "remove_label", "submit_for_review",
+		"report_progress", "submit_for_review",
 	}
 	excludedByPlanner := []string{
-		"create_task", "assign_work_item", "update_work_item",
+		"add_label", "remove_label", "create_task", "assign_work_item", "update_work_item",
 		"set_relation", "remove_relation", "list_relations",
 		"set_parent", "clear_parent", "list_children",
 		"move_work_item", "search_work_items",
@@ -3535,19 +3536,34 @@ func TestExtractLabelIDs_Empty(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestRegisterWithDeps_AddRemoveLabel — add_label and remove_label are
-// registered under the worker profile (same scope as list_labels).
+// NOT registered under the worker profile (they are planner+full only,
+// matching assign_work_item's scoping).
 func TestRegisterWithDeps_AddRemoveLabel(t *testing.T) {
 	// Arrange
 	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
 	client := &mockClient{}
 	resolver := &mockResolver{}
 	formatter := &mockFormatter{}
-	// Worker profile — add_label and remove_label should register.
-	cfg := &config.Config{PlaneMCPProfile: "worker"}
 
-	// Act
-	registerWithDeps(server, client, resolver, formatter, cfg)
-	// No panic = success (the SDK panics if a tool with a bad name is added).
+	// Worker profile — add_label and remove_label should NOT register.
+	workerCfg := &config.Config{PlaneMCPProfile: "worker"}
+	registerWithDeps(server, client, resolver, formatter, workerCfg)
+
+	if shouldRegister("add_label", plannerFull, workerCfg) {
+		t.Error("add_label should NOT register under worker profile")
+	}
+	if shouldRegister("remove_label", plannerFull, workerCfg) {
+		t.Error("remove_label should NOT register under worker profile")
+	}
+
+	// Planner profile — both tools SHOULD register.
+	plannerCfg := &config.Config{PlaneMCPProfile: "planner"}
+	if !shouldRegister("add_label", plannerFull, plannerCfg) {
+		t.Error("add_label SHOULD register under planner profile")
+	}
+	if !shouldRegister("remove_label", plannerFull, plannerCfg) {
+		t.Error("remove_label SHOULD register under planner profile")
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -3999,7 +4015,7 @@ func TestExtractAssigneeIDs_Empty(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestRegisterWithDeps_ListStates — list_states must register under the worker
-// profile (same scope as list_labels, add_label, remove_label).
+// profile (same scope as list_labels).
 func TestRegisterWithDeps_ListStates(t *testing.T) {
 	// Arrange
 	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
