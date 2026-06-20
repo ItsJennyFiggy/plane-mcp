@@ -175,8 +175,8 @@ A `ping` tool is always registered (connection check), regardless of profile. Th
 
 | Tool | Description | `worker` | `reviewer` | `planner` | `full` |
 |---|---|:---:|:---:|:---:|:---:|
-| `add_label` | Attach a label (by name or id) to a work item. | ✅ | | ✅ | ✅ |
-| `remove_label` | Detach a label (by name or id) from a work item. | ✅ | | ✅ | ✅ |
+| `add_label` | Attach a label (by name or id) to a work item. |   | | ✅ | ✅ |
+| `remove_label` | Detach a label (by name or id) from a work item. |   | | ✅ | ✅ |
 | `assign_work_item` | Set / add / remove assignees by name, email, or id. | | | ✅ | ✅ |
 
 ### Create, update & hierarchy
