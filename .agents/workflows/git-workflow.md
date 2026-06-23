@@ -15,22 +15,10 @@ Before writing code, create a descriptive feature branch from the latest `main`.
     ```bash
     git pull origin main
     ```
-    > [!IMPORTANT]
-    > If this command fails with an authentication error (e.g., `Invalid username or token. Password authentication is not supported`):
-    > - **Standard Repositories**: If the repository does not use a GitHub App, this is usually caused by an invalid/expired inherited token. Run the pull with the tokens explicitly unset to fall back to your host SSH/keychain configuration:
-    >   ```bash
-    >   GH_TOKEN="" GITHUB_TOKEN="" git pull origin main
-    >   ```
-    > - **GitHub App Repositories**: If the repository is configured to use a GitHub App for authentication (via a local `.env.git-app` file), ensure the local `gh` wrapper is configured and prepend it to your `PATH` before running the command:
-    >   ```bash
-    >   PATH="$PWD/.agents/bin:$PATH" git pull origin main
-    >   ```
 3.  **Create the feature branch**:
     ```bash
     git checkout -b feature/your-feature-name
     ```
-
-
 ---
 
 ## Step 1.5: Plan Alignment (The Plan-First Gate)

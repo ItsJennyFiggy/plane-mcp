@@ -37,19 +37,3 @@ Before launching a development server, mock service, or background API:
 *   **Schema Safety**: Never bypass the application's ORM or migration framework to run direct raw SQL schema-altering commands unless explicitly instructed by the user.
 *   **Reversible Seeding**: Mock data insertion scripts should be clean, repeatable, and idempotent. Avoid seeding duplicate rows or polluting shared databases.
 
----
-
-## 4. AWS Credential Gotchas
-
-To ensure seamless AWS authentication and avoid lockout during infrastructure deployment:
-
-1.  **IAM Role Assumption Limit:**
-    AWS root credentials cannot assume IAM roles. When executing local commands or shell scripts that assume a role (e.g., `itsjennyfiggy-agent-development`), the `agent-shell` environment MUST be configured with an IAM-principal source profile (not root credentials).
-2.  **Local Terraform Provider Session:**
-    The local Terraform provider does not automatically read the active `aws login` SSO session. You MUST export the current SSO credentials to the environment variables before running Terraform plans/applies:
-    ```bash
-    eval "$(aws configure export-credentials --format env)"
-    ```
-3.  **CI Role Policies and Planning-Stage Lockouts:**
-    Before modifying or restricting permissions of any CI role, you MUST enumerate and preserve all necessary *refresh-read* permissions (e.g., `sns:GetTopicAttributes`, `s3:GetBucketAcl`). Removing these permissions can prevent the role from planning or correcting its own policy configuration, leading to lockout.
-
