@@ -8798,6 +8798,7 @@ func TestSetModule_ModuleEmpty(t *testing.T) {
 		t.Errorf("expected 'module is required', got: %s", text)
 	}
 }
+
 // ---------------------------------------------------------------------------
 // update_work_item with module tests
 // ---------------------------------------------------------------------------
@@ -9006,4 +9007,3 @@ func TestUpdateWorkItem_ModuleOnlyEmpty(t *testing.T) {
 		t.Errorf("expected 'at least one' required field message, got: %s", text)
 	}
 }
-
