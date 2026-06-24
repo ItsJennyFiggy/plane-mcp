@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.14.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.13.0...v1.14.0) (2026-06-24)
+
+
+### Features
+
+* **tools:** add list_modules + set_module tools (AGENT-125) ([#75](https://github.com/ItsJennyFiggy/plane-mcp/issues/75)) ([df6ded7](https://github.com/ItsJennyFiggy/plane-mcp/commit/df6ded787978121ec72290c5ce28f2de6483680c))
+* **tools:** remove add_label/remove_label from the worker profile ([#72](https://github.com/ItsJennyFiggy/plane-mcp/issues/72)) ([2ac1c44](https://github.com/ItsJennyFiggy/plane-mcp/commit/2ac1c44c9f724c558c9396c2bb6a9399f079078e))
+
 ## [1.14.0] — Unreleased
 
 ### Features
