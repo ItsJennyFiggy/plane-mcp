@@ -155,6 +155,7 @@ A `ping` tool is always registered (connection check), regardless of profile. Th
 | `get_work_item` | Retrieve a single work item by identifier (e.g. `PROJ-123`). | ✅ | ✅ | ✅ | ✅ |
 | `list_projects` | List all projects (identifier, name, id). | ✅ | ✅ | ✅ | ✅ |
 | `list_labels` | List all labels in a project. | ✅ | ✅ | ✅ | ✅ |
+| `list_modules` | List all modules in a project. | ✅ | ✅ | ✅ | ✅ |
 | `list_states` | List all states in a project. | ✅ | ✅ | ✅ | ✅ |
 | `list_work_items` | List work items in a project with optional filters. | | ✅ | ✅ | ✅ |
 | `search_work_items` | Search work items across the workspace by text query. | | | ✅ | ✅ |
@@ -184,7 +185,8 @@ A `ping` tool is always registered (connection check), regardless of profile. Th
 | Tool | Description | `worker` | `reviewer` | `planner` | `full` |
 |---|---|:---:|:---:|:---:|:---:|
 | `create_task` | Create a new work item (Markdown description, labels, assignees, module). | | | ✅ | ✅ |
-| `update_work_item` | Update a work item's name, description, priority, or state. | | | ✅ | ✅ |
+| `update_work_item` | Update a work item's name, description, priority, state, or module. | | | ✅ | ✅ |
+| `set_module` | Assign a work item to a module by name or ID. | | | ✅ | ✅ |
 | `set_relation` | Create a relation between two work items. | | | ✅ | ✅ |
 | `remove_relation` | ⚠️ Not functional — the Plane API exposes no relation-removal endpoint for API-key auth; remove relations via the Plane web UI. | | | ✅ | ✅ |
 | `set_parent` | Set a work item's parent. | | | ✅ | ✅ |

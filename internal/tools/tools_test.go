@@ -560,6 +560,7 @@ type mockClient struct {
 	addWorkItemsToModuleFn    func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error
 	listLabelsFn              func(ctx context.Context, projectID string) ([]plane.Label, error)
 	listStatesFn              func(ctx context.Context, projectID string) ([]plane.State, error)
+	listModulesFn             func(ctx context.Context, projectID string) ([]plane.Module, error)
 	listCommentsFn            func(ctx context.Context, projectID, workItemID string) ([]plane.Comment, error)
 	getLastCommentFn          func(ctx context.Context, projectID, workItemID string) (*plane.Comment, error)
 	getWorkItemFn             func(ctx context.Context, projectID, workItemID string) (*plane.WorkItem, error)
@@ -600,6 +601,10 @@ func (m *mockClient) ListLabels(ctx context.Context, projectID string) ([]plane.
 }
 func (m *mockClient) ListStates(ctx context.Context, projectID string) ([]plane.State, error) {
 	return m.listStatesFn(ctx, projectID)
+}
+
+func (m *mockClient) ListModules(ctx context.Context, projectID string) ([]plane.Module, error) {
+	return m.listModulesFn(ctx, projectID)
 }
 
 func (m *mockClient) ListComments(ctx context.Context, projectID, workItemID string) ([]plane.Comment, error) {
@@ -8480,5 +8485,525 @@ func TestGetWorkItem_DetailSchema_Optional(t *testing.T) {
 	}
 	if err := resolved.Validate(map[string]any{"identifier": "PROJ-1", "detail": "verbose"}); err == nil {
 		t.Error("an out-of-enum detail value must be rejected by validation")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// list_modules tests
+// ---------------------------------------------------------------------------
+
+func TestListModules_Success(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		listModulesFn: func(ctx context.Context, projectID string) ([]plane.Module, error) {
+			if projectID != "proj-uuid" {
+				t.Errorf("unexpected projectID: %s", projectID)
+			}
+			return []plane.Module{
+				{ID: "mod-1", Name: "Sprint 1"},
+				{ID: "mod-2", Name: "Backlog"},
+			}, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "TestProject", Identifier: "TP"}, nil
+		},
+	}
+	args := ListModulesArgs{Project: "TP"}
+
+	result, err := listModules(ctx, args, client, resolver)
+
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false: %+v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "mod-1") || !strings.Contains(text, "Sprint 1") {
+		t.Errorf("output should contain module id and name:\n%s", text)
+	}
+	if !strings.Contains(text, "mod-2") || !strings.Contains(text, "Backlog") {
+		t.Errorf("output should contain both modules:\n%s", text)
+	}
+}
+
+func TestListModules_Empty(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		listModulesFn: func(ctx context.Context, projectID string) ([]plane.Module, error) {
+			return nil, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "TestProject", Identifier: "TP"}, nil
+		},
+	}
+	args := ListModulesArgs{Project: "TP"}
+
+	result, err := listModules(ctx, args, client, resolver)
+
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got error: %+v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if text != "No modules found in this project." {
+		t.Errorf("expected 'No modules found in this project.', got: %q", text)
+	}
+}
+
+func TestListModules_ProjectResolutionError(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		listModulesFn: func(ctx context.Context, projectID string) ([]plane.Module, error) {
+			t.Error("ListModules should not be called when project resolution fails")
+			return nil, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return nil, errors.New("project not found")
+		},
+	}
+	args := ListModulesArgs{Project: "UNKNOWN"}
+
+	result, err := listModules(ctx, args, client, resolver)
+
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true, got success: %+v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "failed to resolve project") {
+		t.Errorf("expected project resolution error message, got: %s", text)
+	}
+}
+
+func TestListModules_ClientError(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		listModulesFn: func(ctx context.Context, projectID string) ([]plane.Module, error) {
+			return nil, errors.New("API error")
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "TestProject", Identifier: "TP"}, nil
+		},
+	}
+	args := ListModulesArgs{Project: "TP"}
+
+	result, err := listModules(ctx, args, client, resolver)
+
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true, got success: %+v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "failed to list modules") {
+		t.Errorf("expected 'failed to list modules' error, got: %s", text)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// set_module tests
+// ---------------------------------------------------------------------------
+
+func TestSetModule_Success(t *testing.T) {
+	ctx := context.Background()
+	var capturedProjectID, capturedModuleID string
+	var capturedWorkItemIDs []string
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{ID: "wi-uuid", Name: "Test Item", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+		},
+		addWorkItemsToModuleFn: func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error {
+			capturedProjectID = projectID
+			capturedModuleID = moduleID
+			capturedWorkItemIDs = workItemIDs
+			return nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveModuleFn: func(ctx context.Context, projectID string, input string) (*plane.Module, error) {
+			return &plane.Module{ID: "mod-uuid", Name: "Sprint 1"}, nil
+		},
+	}
+	args := SetModuleArgs{
+		WorkItem: "PROJ-1",
+		Module:   "Sprint 1",
+	}
+
+	result, err := setModule(ctx, args, client, resolver)
+
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got: %+v", result.Content)
+	}
+	if capturedProjectID != "proj-uuid" {
+		t.Errorf("projectID = %q, want %q", capturedProjectID, "proj-uuid")
+	}
+	if capturedModuleID != "mod-uuid" {
+		t.Errorf("moduleID = %q, want %q", capturedModuleID, "mod-uuid")
+	}
+	if len(capturedWorkItemIDs) != 1 || capturedWorkItemIDs[0] != "wi-uuid" {
+		t.Errorf("workItemIDs = %v, want [wi-uuid]", capturedWorkItemIDs)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "wi-uuid") || !strings.Contains(text, "Sprint 1") {
+		t.Errorf("output should reference work item and module, got: %s", text)
+	}
+}
+
+func TestSetModule_ModuleNotFound(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{ID: "wi-uuid", Name: "Test Item", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+		},
+		addWorkItemsToModuleFn: func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error {
+			t.Error("AddWorkItemsToModule should not be called when module is unresolved")
+			return nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveModuleFn: func(ctx context.Context, projectID string, input string) (*plane.Module, error) {
+			return nil, errors.New("module not found")
+		},
+	}
+	args := SetModuleArgs{
+		WorkItem: "PROJ-1",
+		Module:   "Nonexistent Module",
+	}
+
+	result, err := setModule(ctx, args, client, resolver)
+
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true, got success: %+v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "failed to resolve module") {
+		t.Errorf("expected module resolution failure message, got: %s", text)
+	}
+}
+
+func TestSetModule_WorkItemNotFound(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return nil, errors.New("work item not found")
+		},
+		addWorkItemsToModuleFn: func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error {
+			t.Error("AddWorkItemsToModule should not be called when work item is not found")
+			return nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveModuleFn: func(ctx context.Context, projectID string, input string) (*plane.Module, error) {
+			return &plane.Module{ID: "mod-uuid", Name: "Sprint 1"}, nil
+		},
+	}
+	args := SetModuleArgs{
+		WorkItem: "INVALID",
+		Module:   "Sprint 1",
+	}
+
+	result, err := setModule(ctx, args, client, resolver)
+
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true, got success: %+v", result.Content)
+	}
+}
+
+func TestSetModule_AssociationError(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{ID: "wi-uuid", Name: "Test Item", Project: plane.Expandable[plane.Project]{ID: "proj-uuid"}}, nil
+		},
+		addWorkItemsToModuleFn: func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error {
+			return errors.New("API error")
+		},
+	}
+	resolver := &mockResolver{
+		resolveModuleFn: func(ctx context.Context, projectID string, input string) (*plane.Module, error) {
+			return &plane.Module{ID: "mod-uuid", Name: "Sprint 1"}, nil
+		},
+	}
+	args := SetModuleArgs{
+		WorkItem: "PROJ-1",
+		Module:   "Sprint 1",
+	}
+
+	result, err := setModule(ctx, args, client, resolver)
+
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true, got success: %+v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "failed to add") {
+		t.Errorf("expected association error, got: %s", text)
+	}
+}
+
+func TestSetModule_ModuleEmpty(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		addWorkItemsToModuleFn: func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error {
+			t.Error("AddWorkItemsToModule should not be called when module is empty")
+			return nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveModuleFn: func(ctx context.Context, projectID string, input string) (*plane.Module, error) {
+			t.Error("ResolveModule should not be called when module is empty")
+			return nil, nil
+		},
+	}
+	args := SetModuleArgs{
+		WorkItem: "PROJ-1",
+		Module:   "",
+	}
+
+	result, err := setModule(ctx, args, client, resolver)
+
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true, got success: %+v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "module is required") {
+		t.Errorf("expected 'module is required', got: %s", text)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// update_work_item with module tests
+// ---------------------------------------------------------------------------
+
+func TestUpdateWorkItem_Module(t *testing.T) {
+	ctx := context.Background()
+	var capturedModuleID string
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{
+				ID:      "wi-uuid",
+				Name:    "Test Item",
+				Project: plane.Expandable[plane.Project]{ID: "proj-uuid"},
+			}, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			return &plane.WorkItem{
+				ID:      "wi-uuid",
+				Name:    "Updated Name",
+				Project: plane.Expandable[plane.Project]{ID: "proj-uuid"},
+			}, nil
+		},
+		addWorkItemsToModuleFn: func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error {
+			capturedModuleID = moduleID
+			return nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveModuleFn: func(ctx context.Context, projectID string, input string) (*plane.Module, error) {
+			return &plane.Module{ID: "mod-uuid", Name: "Sprint 1"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: Updated Name\n", nil
+		},
+	}
+
+	name := "Updated Name"
+	module := "Sprint 1"
+	args := UpdateWorkItemArgs{
+		Identifier: "PROJ-1",
+		Name:       &name,
+		Module:     &module,
+	}
+
+	result, err := updateWorkItem(ctx, args, client, resolver, formatter)
+
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got: %+v", result.Content)
+	}
+	if capturedModuleID != "mod-uuid" {
+		t.Errorf("moduleID = %q, want %q", capturedModuleID, "mod-uuid")
+	}
+}
+
+func TestUpdateWorkItem_ModuleNotFound(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{
+				ID:      "wi-uuid",
+				Name:    "Test Item",
+				Project: plane.Expandable[plane.Project]{ID: "proj-uuid"},
+			}, nil
+		},
+		addWorkItemsToModuleFn: func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error {
+			t.Error("AddWorkItemsToModule should not be called when module is unresolved")
+			return nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveModuleFn: func(ctx context.Context, projectID string, input string) (*plane.Module, error) {
+			return nil, errors.New("module not found")
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: Test Item\n", nil
+		},
+	}
+
+	module := "Nonexistent Module"
+	args := UpdateWorkItemArgs{
+		Identifier: "PROJ-1",
+		Module:     &module,
+	}
+
+	result, err := updateWorkItem(ctx, args, client, resolver, formatter)
+
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true, got success: %+v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "failed to resolve module") {
+		t.Errorf("expected module resolution failure message, got: %s", text)
+	}
+}
+
+func TestUpdateWorkItem_ModuleAssociationError(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{
+				ID:      "wi-uuid",
+				Name:    "Test Item",
+				Project: plane.Expandable[plane.Project]{ID: "proj-uuid"},
+			}, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			return &plane.WorkItem{
+				ID:      "wi-uuid",
+				Name:    "Test Item",
+				Project: plane.Expandable[plane.Project]{ID: "proj-uuid"},
+			}, nil
+		},
+		addWorkItemsToModuleFn: func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error {
+			return errors.New("API error during association")
+		},
+	}
+	resolver := &mockResolver{
+		resolveModuleFn: func(ctx context.Context, projectID string, input string) (*plane.Module, error) {
+			return &plane.Module{ID: "mod-uuid", Name: "Sprint 1"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			return "name: Test Item\n", nil
+		},
+	}
+
+	module := "Sprint 1"
+	args := UpdateWorkItemArgs{
+		Identifier: "PROJ-1",
+		Module:     &module,
+	}
+
+	result, err := updateWorkItem(ctx, args, client, resolver, formatter)
+
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true, got success: %+v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "could not be added to module") {
+		t.Errorf("expected association error message, got: %s", text)
+	}
+}
+
+func TestUpdateWorkItem_ModuleOnlyEmpty(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{
+				ID:      "wi-uuid",
+				Name:    "Test Item",
+				Project: plane.Expandable[plane.Project]{ID: "proj-uuid"},
+			}, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			t.Error("UpdateWorkItem should not be called when only empty module is provided")
+			return nil, nil
+		},
+		addWorkItemsToModuleFn: func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error {
+			t.Error("AddWorkItemsToModule should not be called when module is empty")
+			return nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveModuleFn: func(ctx context.Context, projectID string, input string) (*plane.Module, error) {
+			t.Error("ResolveModule should not be called when module is empty")
+			return nil, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			t.Error("FormatWorkItemYAML should not be called when no update is performed")
+			return "", nil
+		},
+	}
+
+	module := ""
+	args := UpdateWorkItemArgs{
+		Identifier: "PROJ-1",
+		Module:     &module,
+	}
+
+	result, err := updateWorkItem(ctx, args, client, resolver, formatter)
+
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true, got success: %+v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "at least one") {
+		t.Errorf("expected 'at least one' required field message, got: %s", text)
 	}
 }
