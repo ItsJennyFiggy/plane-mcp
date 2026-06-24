@@ -40,6 +40,7 @@ type planeClient interface {
 	AddWorkItemsToModule(ctx context.Context, projectID, moduleID string, workItemIDs []string) error
 	ListLabels(ctx context.Context, projectID string) ([]plane.Label, error)
 	ListStates(ctx context.Context, projectID string) ([]plane.State, error)
+	ListModules(ctx context.Context, projectID string) ([]plane.Module, error)
 	ListComments(ctx context.Context, projectID, workItemID string) ([]plane.Comment, error)
 	GetLastComment(ctx context.Context, projectID, workItemID string) (*plane.Comment, error)
 	GetWorkItem(ctx context.Context, projectID, workItemID string) (*plane.WorkItem, error)
@@ -478,6 +479,17 @@ type ListStatesArgs struct {
 	Project string `json:"project"`
 }
 
+// ListModulesArgs are the arguments for the list_modules tool.
+type ListModulesArgs struct {
+	Project string `json:"project"`
+}
+
+// SetModuleArgs are the arguments for the set_module tool.
+type SetModuleArgs struct {
+	WorkItem string `json:"work_item"`
+	Module   string `json:"module"`
+}
+
 // AddLabelArgs are the arguments for the add_label tool.
 type AddLabelArgs struct {
 	Identifier string `json:"identifier"`
@@ -547,6 +559,7 @@ type UpdateWorkItemArgs struct {
 	Description *string `json:"description,omitempty"`
 	Priority    *string `json:"priority,omitempty"`
 	State       *string `json:"state,omitempty"`
+	Module      *string `json:"module,omitempty"`
 }
 
 // SetParentArgs are the arguments for the set_parent tool.
@@ -1507,6 +1520,63 @@ func listStates(ctx context.Context, args ListStatesArgs, client planeClient, re
 	return toolText(b.String()), nil
 }
 
+// listModules implements the list_modules tool logic.
+func listModules(ctx context.Context, args ListModulesArgs, client planeClient, resolver planeResolver) (*mcp.CallToolResult, error) {
+	proj, err := resolver.ResolveProject(ctx, args.Project)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to resolve project %q: %v", args.Project, err)), nil
+	}
+
+	modules, err := client.ListModules(ctx, proj.ID)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to list modules: %v", err)), nil
+	}
+
+	if len(modules) == 0 {
+		return toolText("No modules found in this project."), nil
+	}
+
+	var b strings.Builder
+	for _, m := range modules {
+		fmt.Fprintf(&b, "- id: %q\n  name: %q\n", m.ID, m.Name)
+	}
+
+	return toolText(b.String()), nil
+}
+
+// setModule implements the set_module tool logic.
+func setModule(ctx context.Context, args SetModuleArgs, client planeClient, resolver planeResolver) (*mcp.CallToolResult, error) {
+	// Parse the work item identifier to get project identifier and sequence ID.
+	projIdentifier, seqID, err := parseIdentifier(args.WorkItem)
+	if err != nil {
+		return toolError(fmt.Sprintf("invalid work item identifier %q: %v", args.WorkItem, err)), nil
+	}
+
+	// Fetch the work item to get its UUID and project ID.
+	item, err := client.GetWorkItemByIdentifier(ctx, projIdentifier, seqID)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to get work item %q: %v", args.WorkItem, err)), nil
+	}
+
+	projectID := getProjectID(item.Project)
+
+	// Resolve the module (hard error if unresolved — mirrors create_task behaviour).
+	module, err := resolver.ResolveModule(ctx, projectID, args.Module)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to resolve module %q: %v", args.Module, err)), nil
+	}
+
+	// Associate the work item with the module via the join endpoint.
+	if err := client.AddWorkItemsToModule(ctx, projectID, module.ID, []string{item.ID}); err != nil {
+		return toolError(fmt.Sprintf(
+			"failed to add work item %q (id %s) to module %q: %v",
+			item.Name, item.ID, module.Name, err,
+		)), nil
+	}
+
+	return toolText(fmt.Sprintf("Work item %q (id %s) added to module %q (id %s).", item.Name, item.ID, module.Name, module.ID)), nil
+}
+
 // extractLabelIDs returns the ID strings from a slice of Expandable[Label],
 // handling both expanded (Val != nil) and non-expanded (ID only) entries.
 func extractLabelIDs(labels []plane.Expandable[plane.Label]) []string {
@@ -1924,16 +1994,35 @@ func updateWorkItem(ctx context.Context, args UpdateWorkItemArgs, client planeCl
 		body["state"] = state.ID
 	}
 
-	if len(body) == 0 {
-		return toolError("at least one of name, description, priority, or state is required"), nil
+	// Only require at least one PATCH field if no module is specified — a
+	// module-only update is valid (module association uses a separate join endpoint).
+	if len(body) == 0 && args.Module == nil {
+		return toolError("at least one of name, description, priority, state, or module is required"), nil
 	}
 
-	updated, err := client.UpdateWorkItem(ctx, projectID, item.ID, body)
-	if err != nil {
-		return toolError(fmt.Sprintf("failed to update work item: %v", err)), nil
+	if len(body) > 0 {
+		updated, err := client.UpdateWorkItem(ctx, projectID, item.ID, body)
+		if err != nil {
+			return toolError(fmt.Sprintf("failed to update work item: %v", err)), nil
+		}
+		item = updated
 	}
 
-	yaml, err := formatter.FormatWorkItemYAML(ctx, updated, "full")
+	// Handle module association (join endpoint, not a PATCH field).
+	if args.Module != nil {
+		module, err := resolver.ResolveModule(ctx, projectID, *args.Module)
+		if err != nil {
+			return toolError(fmt.Sprintf("failed to resolve module %q: %v", *args.Module, err)), nil
+		}
+		if err := client.AddWorkItemsToModule(ctx, projectID, module.ID, []string{item.ID}); err != nil {
+			return toolError(fmt.Sprintf(
+				"work item %q (id %s) was updated but could not be added to module %q: %v",
+				item.Name, item.ID, module.Name, err,
+			)), nil
+		}
+	}
+
+	yaml, err := formatter.FormatWorkItemYAML(ctx, item, "full")
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to format updated work item: %v", err)), nil
 	}
@@ -2138,7 +2227,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 	if shouldRegister("update_work_item", plannerFull, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "update_work_item",
-			Description: "Update a work item's editable fields (name, description, priority, state) by its project-prefixed identifier (e.g. PROJ-123). Only the fields you provide are changed; omit any field to leave it unchanged. State is resolved by name or ID. Description accepts Markdown and is converted to Plane-native rich text.",
+			Description: "Update a work item's editable fields (name, description, priority, state, module) by its project-prefixed identifier (e.g. PROJ-123). Only the fields you provide are changed; omit any field to leave it unchanged. State is resolved by name or ID. Module is resolved by name or ID and assigned via the module-issues join endpoint (not a PATCH field). Description accepts Markdown and is converted to Plane-native rich text.",
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, IdempotentHint: true},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args UpdateWorkItemArgs) (*mcp.CallToolResult, any, error) {
 			result, err := updateWorkItem(ctx, args, client, resolver, formatter)
@@ -2322,6 +2411,28 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &truePtr},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args MoveWorkItemArgs) (*mcp.CallToolResult, any, error) {
 			result, err := moveWorkItem(ctx, args, client, resolver, formatter)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("list_modules", workerPlannerFullReviewer, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "list_modules",
+			Description: "List all modules in a project, returning each module's id and name.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args ListModulesArgs) (*mcp.CallToolResult, any, error) {
+			result, err := listModules(ctx, args, client, resolver)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("set_module", plannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "set_module",
+			Description: "Assign a work item to a module by its project-prefixed identifier (e.g. PROJ-123). The module is resolved by name or ID; if it cannot be resolved the call fails with a hard error.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, IdempotentHint: true},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args SetModuleArgs) (*mcp.CallToolResult, any, error) {
+			result, err := setModule(ctx, args, client, resolver)
 			return result, nil, err
 		})
 	}

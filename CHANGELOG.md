@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.0] — Unreleased
+
+### Features
+
+* **tools:** add list_modules + set_module tools (module read/assign surface) (AGENT-125)
+* **tools:** add module parameter to update_work_item (AGENT-125)
+
 ## [1.13.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.12.2...v1.13.0) (2026-06-18)
 
 
