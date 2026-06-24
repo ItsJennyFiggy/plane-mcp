@@ -8766,6 +8766,38 @@ func TestSetModule_AssociationError(t *testing.T) {
 	}
 }
 
+func TestSetModule_ModuleEmpty(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		addWorkItemsToModuleFn: func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error {
+			t.Error("AddWorkItemsToModule should not be called when module is empty")
+			return nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveModuleFn: func(ctx context.Context, projectID string, input string) (*plane.Module, error) {
+			t.Error("ResolveModule should not be called when module is empty")
+			return nil, nil
+		},
+	}
+	args := SetModuleArgs{
+		WorkItem: "PROJ-1",
+		Module:   "",
+	}
+
+	result, err := setModule(ctx, args, client, resolver)
+
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true, got success: %+v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "module is required") {
+		t.Errorf("expected 'module is required', got: %s", text)
+	}
+}
 // ---------------------------------------------------------------------------
 // update_work_item with module tests
 // ---------------------------------------------------------------------------
@@ -8920,6 +8952,58 @@ func TestUpdateWorkItem_ModuleAssociationError(t *testing.T) {
 	text := result.Content[0].(*mcp.TextContent).Text
 	if !strings.Contains(text, "could not be added to module") {
 		t.Errorf("expected association error message, got: %s", text)
+	}
+}
+
+func TestUpdateWorkItem_ModuleOnlyEmpty(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		getWorkItemByIdentifierFn: func(ctx context.Context, pi string, seq int) (*plane.WorkItem, error) {
+			return &plane.WorkItem{
+				ID:      "wi-uuid",
+				Name:    "Test Item",
+				Project: plane.Expandable[plane.Project]{ID: "proj-uuid"},
+			}, nil
+		},
+		updateWorkItemFn: func(ctx context.Context, projectID, itemID string, body map[string]any) (*plane.WorkItem, error) {
+			t.Error("UpdateWorkItem should not be called when only empty module is provided")
+			return nil, nil
+		},
+		addWorkItemsToModuleFn: func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error {
+			t.Error("AddWorkItemsToModule should not be called when module is empty")
+			return nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveModuleFn: func(ctx context.Context, projectID string, input string) (*plane.Module, error) {
+			t.Error("ResolveModule should not be called when module is empty")
+			return nil, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatWorkItemYAMLFn: func(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
+			t.Error("FormatWorkItemYAML should not be called when no update is performed")
+			return "", nil
+		},
+	}
+
+	module := ""
+	args := UpdateWorkItemArgs{
+		Identifier: "PROJ-1",
+		Module:     &module,
+	}
+
+	result, err := updateWorkItem(ctx, args, client, resolver, formatter)
+
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true, got success: %+v", result.Content)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "at least one") {
+		t.Errorf("expected 'at least one' required field message, got: %s", text)
 	}
 }
 

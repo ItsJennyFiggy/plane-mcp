@@ -1546,6 +1546,11 @@ func listModules(ctx context.Context, args ListModulesArgs, client planeClient, 
 
 // setModule implements the set_module tool logic.
 func setModule(ctx context.Context, args SetModuleArgs, client planeClient, resolver planeResolver) (*mcp.CallToolResult, error) {
+	// Guard against empty module — it has no valid meaning for this tool.
+	if strings.TrimSpace(args.Module) == "" {
+		return toolError("module is required"), nil
+	}
+
 	// Parse the work item identifier to get project identifier and sequence ID.
 	projIdentifier, seqID, err := parseIdentifier(args.WorkItem)
 	if err != nil {
@@ -1974,6 +1979,12 @@ func updateWorkItem(ctx context.Context, args UpdateWorkItemArgs, client planeCl
 	}
 
 	projectID := getProjectID(item.Project)
+
+	// Normalize empty/whitespace module to nil so it's treated as "not provided",
+	// matching the semantics create_task uses (args.Module != "").
+	if args.Module != nil && strings.TrimSpace(*args.Module) == "" {
+		args.Module = nil
+	}
 
 	body := map[string]any{}
 
