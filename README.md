@@ -7,7 +7,7 @@
 [![Container](https://img.shields.io/badge/ghcr.io-plane--mcp-blue?logo=docker)](https://github.com/ItsJennyFiggy/plane-mcp/pkgs/container/plane-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A Go-native [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that wraps the [Plane.so](https://plane.so) REST API and exposes clean, token-efficient, name-resolved tools to AI agents over stdio — for automated task tracking, progress reporting, and workspace planning.
+A Go-native [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that wraps the [Plane.so](https://plane.so) REST API and exposes clean, token-efficient, name-resolved tools to AI agents over stdio or Streamable HTTP — for automated task tracking, progress reporting, and workspace planning.
 
 ## Table of Contents
 
@@ -24,7 +24,8 @@ A Go-native [Model Context Protocol](https://modelcontextprotocol.io) (MCP) serv
 
 ## Features
 
-- **Stdio transport** — communicates over standard I/O to plug into Claude Desktop, Claude Code, or any MCP client.
+- **Stdio transport (default)** — communicates over standard I/O to plug into Claude Desktop, Claude Code, or any MCP client.
+- **Streamable HTTP transport (optional)** — run `plane-mcp` as a persistent network service (e.g. behind a gateway) by setting `--port`/`PORT`. Requires `MCP_CALLER_SECRET`; callers authenticate via `Authorization: Bearer <secret>` or `X-Caller-Secret`.
 - **Tool scoping profiles** — restrict the exposed tool surface via `PLANE_MCP_PROFILE=worker|planner|reviewer|full`, or pin an exact allowlist with `PLANE_MCP_TOOLS`. Keeps worker agents away from destructive/planning tools and limits reviewers to read + comment-back.
 - **Token-efficient serialization** — work items are serialized to compact YAML, UUID-valued fields (states, assignees, labels) are resolved to human-readable names, description HTML is converted to Markdown, and nulls are stripped to save LLM context.
 - **Name resolution everywhere** — projects, states, labels, modules, and members can be referenced by name, identifier, email, or ID; the server resolves them to UUIDs for you.
@@ -116,19 +117,52 @@ The Claude Desktop config file lives at:
 
 Claude Desktop has no official Linux build — on Linux, use Claude Code or another MCP client that reads the same `mcpServers` schema. After editing the config, restart your client and call the `ping` tool to verify the connection.
 
+### Streamable HTTP variant
+
+Run `plane-mcp` as a persistent network service instead of a per-client subprocess — useful behind a gateway (e.g. [agentgateway](https://agentgateway.dev)) shared by multiple agents/containers:
+
+```bash
+MCP_CALLER_SECRET=your-client-secret-here \
+PLANE_API_KEY=your-plane-api-key \
+PLANE_BASE_URL=https://plane.example.com \
+PLANE_WORKSPACE_SLUG=your-workspace-slug \
+plane-mcp --port 8085 --host 0.0.0.0
+```
+
+Then point an MCP client at it over HTTP:
+
+```json
+{
+  "mcpServers": {
+    "plane": {
+      "type": "http",
+      "url": "http://localhost:8085/",
+      "headers": {
+        "Authorization": "Bearer your-client-secret-here"
+      }
+    }
+  }
+}
+```
+
+*Note: `X-Caller-Secret` works the same as the `Authorization: Bearer` header. If `--port`/`PORT` is set without `MCP_CALLER_SECRET`, the server refuses to start rather than serve unauthenticated.*
+
 ## Configuration
 
-All configuration is supplied via environment variables.
+Most configuration is supplied via environment variables; transport is also controllable via flags.
 
-| Variable | Required | Default | Description |
-|---|:---:|---|---|
-| `PLANE_API_KEY` | ✅ | — | Personal Access Token for the Plane API. |
-| `PLANE_BASE_URL` | ✅ | — | Base URL of your Plane instance (e.g. `https://plane.example.com`, or your self-hosted URL). |
-| `PLANE_WORKSPACE_SLUG` | ✅ | — | The slug of the workspace to operate in. |
-| `PLANE_MCP_PROFILE` | | `full` | Tool scoping profile: `worker`, `planner`, `reviewer`, or `full`. See [Tool Scoping Profiles](#tool-scoping-profiles). |
-| `PLANE_MCP_TOOLS` | | — | Comma-separated explicit tool allowlist (e.g. `find_my_work,get_work_item`). When set, it **overrides** `PLANE_MCP_PROFILE` and only the listed tools are registered. |
-| `CF_ACCESS_CLIENT_ID` | | — | Cloudflare Access service-token client ID, for routing to private/tunneled Plane deployments. |
-| `CF_ACCESS_CLIENT_SECRET` | | — | Cloudflare Access service-token client secret. |
+| Variable | Flag | Required | Default | Description |
+|---|---|:---:|---|---|
+| `PLANE_API_KEY` | | ✅ | — | Personal Access Token for the Plane API. |
+| `PLANE_BASE_URL` | | ✅ | — | Base URL of your Plane instance (e.g. `https://plane.example.com`, or your self-hosted URL). |
+| `PLANE_WORKSPACE_SLUG` | | ✅ | — | The slug of the workspace to operate in. |
+| `PLANE_MCP_PROFILE` | | | `full` | Tool scoping profile: `worker`, `planner`, `reviewer`, or `full`. See [Tool Scoping Profiles](#tool-scoping-profiles). |
+| `PLANE_MCP_TOOLS` | | | — | Comma-separated explicit tool allowlist (e.g. `find_my_work,get_work_item`). When set, it **overrides** `PLANE_MCP_PROFILE` and only the listed tools are registered. |
+| `CF_ACCESS_CLIENT_ID` | | | — | Cloudflare Access service-token client ID, for routing to private/tunneled Plane deployments. |
+| `CF_ACCESS_CLIENT_SECRET` | | | — | Cloudflare Access service-token client secret. |
+| `PORT` | `--port` | | — | Port to run the Streamable HTTP server on. If omitted, the server runs on stdio transport instead. |
+| — | `--host` | | `127.0.0.1` | Host/IP to bind the HTTP server to. Use `0.0.0.0` to allow connections from Docker containers via `host.docker.internal`. |
+| `MCP_CALLER_SECRET` | | ✅ (HTTP mode only) | — | Shared secret callers must present via `Authorization: Bearer <secret>` or `X-Caller-Secret` when running in HTTP mode. The server fails to start in HTTP mode if this is unset. Not used/required in stdio mode. |
 
 ## Tool Scoping Profiles
 
