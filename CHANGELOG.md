@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.14.0...v1.15.0) (2026-06-29)
+
+
+### Features
+
+* **transport:** add Streamable HTTP transport to plane-mcp (AGENT-130) ([#76](https://github.com/ItsJennyFiggy/plane-mcp/issues/76)) ([fe33aa9](https://github.com/ItsJennyFiggy/plane-mcp/commit/fe33aa9b7ef3bc49fb089f02f1588808e53dec60))
+
 ## [1.14.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.13.0...v1.14.0) (2026-06-24)
 
 
