@@ -14,6 +14,7 @@ type Config struct {
 	PlaneMCPTools        []string
 	CFAccessClientID     string
 	CFAccessClientSecret string
+	MCPCallerSecret      string
 }
 
 func Load() (*Config, error) {
@@ -61,5 +62,6 @@ func Load() (*Config, error) {
 		PlaneMCPTools:        tools,
 		CFAccessClientID:     os.Getenv("CF_ACCESS_CLIENT_ID"),
 		CFAccessClientSecret: os.Getenv("CF_ACCESS_CLIENT_SECRET"),
+		MCPCallerSecret:      os.Getenv("MCP_CALLER_SECRET"),
 	}, nil
 }
