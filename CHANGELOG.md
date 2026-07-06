@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.16.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.15.0...v1.16.0) (2026-07-06)
+
+
+### Features
+
+* **tools:** planner project-label CRUD + standard-taxonomy provisioning (AGENT-176) ([#78](https://github.com/ItsJennyFiggy/plane-mcp/issues/78)) ([1701d48](https://github.com/ItsJennyFiggy/plane-mcp/commit/1701d48d7ab5ef0bf30145d0f8485e53e2957879))
+
 ## [1.16.0] — Unreleased
 
 ### Features
