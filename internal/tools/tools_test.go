@@ -2790,7 +2790,7 @@ func TestListLabels_Success(t *testing.T) {
 	args := ListLabelsArgs{Project: "My Project"}
 
 	// Act
-	result, err := 	listProjectLabels(ctx, args, client, resolver)
+	result, err := listProjectLabels(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -2836,7 +2836,7 @@ func TestListLabels_YAMLRoundTrip(t *testing.T) {
 	args := ListLabelsArgs{Project: "Test"}
 
 	// Act
-	result, err := 	listProjectLabels(ctx, args, client, resolver)
+	result, err := listProjectLabels(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -2886,7 +2886,7 @@ func TestListLabels_Empty(t *testing.T) {
 	args := ListLabelsArgs{Project: "Empty Project"}
 
 	// Act
-	result, err := 	listProjectLabels(ctx, args, client, resolver)
+	result, err := listProjectLabels(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -2914,7 +2914,7 @@ func TestListLabels_ProjectResolutionError(t *testing.T) {
 	args := ListLabelsArgs{Project: "Unknown"}
 
 	// Act
-	result, err := 	listProjectLabels(ctx, args, client, resolver)
+	result, err := listProjectLabels(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -2942,7 +2942,7 @@ func TestListLabels_ClientError(t *testing.T) {
 	args := ListLabelsArgs{Project: "My Project"}
 
 	// Act
-	result, err := 	listProjectLabels(ctx, args, client, resolver)
+	result, err := listProjectLabels(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3081,7 +3081,7 @@ func TestAddLabel_Success(t *testing.T) {
 	args := AddLabelArgs{Identifier: "PROJ-1", Label: "enhancement"}
 
 	// Act
-	result, err := 	addLabelToWorkItem(ctx, args, client, resolver)
+	result, err := addLabelToWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3129,7 +3129,7 @@ func TestAddLabel_AlreadyAttached(t *testing.T) {
 	args := AddLabelArgs{Identifier: "PROJ-1", Label: "feature"}
 
 	// Act
-	result, err := 	addLabelToWorkItem(ctx, args, client, resolver)
+	result, err := addLabelToWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3165,7 +3165,7 @@ func TestAddLabel_UnknownLabel(t *testing.T) {
 	args := AddLabelArgs{Identifier: "PROJ-1", Label: "nonexistent"}
 
 	// Act
-	result, err := 	addLabelToWorkItem(ctx, args, client, resolver)
+	result, err := addLabelToWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3185,7 +3185,7 @@ func TestAddLabel_InvalidIdentifier(t *testing.T) {
 	args := AddLabelArgs{Identifier: "bad", Label: "bug"}
 
 	// Act
-	result, err := 	addLabelToWorkItem(ctx, args, client, resolver)
+	result, err := addLabelToWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3209,7 +3209,7 @@ func TestAddLabel_WorkItemNotFound(t *testing.T) {
 	args := AddLabelArgs{Identifier: "PROJ-1", Label: "bug"}
 
 	// Act
-	result, err := 	addLabelToWorkItem(ctx, args, client, resolver)
+	result, err := addLabelToWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3245,7 +3245,7 @@ func TestAddLabel_UpdateError(t *testing.T) {
 	args := AddLabelArgs{Identifier: "PROJ-1", Label: "bug"}
 
 	// Act
-	result, err := 	addLabelToWorkItem(ctx, args, client, resolver)
+	result, err := addLabelToWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3283,7 +3283,7 @@ func TestAddLabel_ResolveByName(t *testing.T) {
 	args := AddLabelArgs{Identifier: "PROJ-1", Label: "critical"}
 
 	// Act
-	result, err := 	addLabelToWorkItem(ctx, args, client, resolver)
+	result, err := addLabelToWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3328,7 +3328,7 @@ func TestRemoveLabel_Success(t *testing.T) {
 	args := RemoveLabelArgs{Identifier: "PROJ-1", Label: "bug"}
 
 	// Act
-	result, err := 	removeLabelFromWorkItem(ctx, args, client, resolver)
+	result, err := removeLabelFromWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3373,7 +3373,7 @@ func TestRemoveLabel_NotAttached(t *testing.T) {
 	args := RemoveLabelArgs{Identifier: "PROJ-1", Label: "bug"}
 
 	// Act
-	result, err := 	removeLabelFromWorkItem(ctx, args, client, resolver)
+	result, err := removeLabelFromWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3408,7 +3408,7 @@ func TestRemoveLabel_UnknownLabel(t *testing.T) {
 	args := RemoveLabelArgs{Identifier: "PROJ-1", Label: "nonexistent"}
 
 	// Act
-	result, err := 	removeLabelFromWorkItem(ctx, args, client, resolver)
+	result, err := removeLabelFromWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3428,7 +3428,7 @@ func TestRemoveLabel_InvalidIdentifier(t *testing.T) {
 	args := RemoveLabelArgs{Identifier: "bad", Label: "bug"}
 
 	// Act
-	result, err := 	removeLabelFromWorkItem(ctx, args, client, resolver)
+	result, err := removeLabelFromWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3466,7 +3466,7 @@ func TestRemoveLabel_RemoveAll(t *testing.T) {
 	args := RemoveLabelArgs{Identifier: "PROJ-1", Label: "only"}
 
 	// Act
-	result, err := 	removeLabelFromWorkItem(ctx, args, client, resolver)
+	result, err := removeLabelFromWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3509,7 +3509,7 @@ func TestRemoveLabel_UpdateError(t *testing.T) {
 	args := RemoveLabelArgs{Identifier: "PROJ-1", Label: "bug"}
 
 	// Act
-	result, err := 	removeLabelFromWorkItem(ctx, args, client, resolver)
+	result, err := removeLabelFromWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
