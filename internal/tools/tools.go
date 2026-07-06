@@ -39,6 +39,9 @@ type planeClient interface {
 	CreateWorkItemLink(ctx context.Context, projectID, itemID, linkURL, title string) error
 	AddWorkItemsToModule(ctx context.Context, projectID, moduleID string, workItemIDs []string) error
 	ListLabels(ctx context.Context, projectID string) ([]plane.Label, error)
+	CreateLabel(ctx context.Context, projectID, name, color string) (*plane.Label, error)
+	UpdateLabel(ctx context.Context, projectID, labelID, name, color string) (*plane.Label, error)
+	DeleteLabel(ctx context.Context, projectID, labelID string) error
 	ListStates(ctx context.Context, projectID string) ([]plane.State, error)
 	ListModules(ctx context.Context, projectID string) ([]plane.Module, error)
 	ListComments(ctx context.Context, projectID, workItemID string) ([]plane.Comment, error)
@@ -469,7 +472,7 @@ const (
 type ListProjectsArgs struct {
 }
 
-// ListLabelsArgs are the arguments for the list_labels tool.
+// ListLabelsArgs are the arguments for the list_project_labels tool.
 type ListLabelsArgs struct {
 	Project string `json:"project"`
 }
@@ -490,13 +493,13 @@ type SetModuleArgs struct {
 	Module   string `json:"module"`
 }
 
-// AddLabelArgs are the arguments for the add_label tool.
+// AddLabelArgs are the arguments for the add_label_to_work_item tool.
 type AddLabelArgs struct {
 	Identifier string `json:"identifier"`
 	Label      string `json:"label"`
 }
 
-// RemoveLabelArgs are the arguments for the remove_label tool.
+// RemoveLabelArgs are the arguments for the remove_label_from_work_item tool.
 type RemoveLabelArgs struct {
 	Identifier string `json:"identifier"`
 	Label      string `json:"label"`
@@ -583,6 +586,34 @@ type MoveWorkItemArgs struct {
 	Identifier     string `json:"identifier"`
 	TargetProject  string `json:"target_project"`
 	DeleteOriginal bool   `json:"delete_original"`
+}
+
+// CreateProjectLabelArgs are the arguments for the create_project_label tool.
+type CreateProjectLabelArgs struct {
+	Project string `json:"project"`
+	Name    string `json:"name"`
+	Color   string `json:"color,omitempty"`
+}
+
+// UpdateProjectLabelArgs are the arguments for the update_project_label tool.
+type UpdateProjectLabelArgs struct {
+	Project string  `json:"project"`
+	Label   string  `json:"label"`
+	Name    *string `json:"name,omitempty"`
+	Color   *string `json:"color,omitempty"`
+}
+
+// DeleteProjectLabelArgs are the arguments for the delete_project_label tool.
+type DeleteProjectLabelArgs struct {
+	Project string `json:"project"`
+	Label   string `json:"label"`
+	Confirm bool   `json:"confirm"`
+}
+
+// ProvisionStandardLabelsArgs are the arguments for the provision_standard_labels tool.
+type ProvisionStandardLabelsArgs struct {
+	Project string `json:"project"`
+	DryRun  bool   `json:"dry_run"`
 }
 
 // commentOut is the YAML-serializable representation of a single comment,
@@ -1472,8 +1503,8 @@ func listProjects(ctx context.Context, client planeClient) (*mcp.CallToolResult,
 	return toolText(b.String()), nil
 }
 
-// listLabels implements the list_labels tool logic.
-func listLabels(ctx context.Context, args ListLabelsArgs, client planeClient, resolver planeResolver) (*mcp.CallToolResult, error) {
+// listProjectLabels implements the list_project_labels tool logic.
+func listProjectLabels(ctx context.Context, args ListLabelsArgs, client planeClient, resolver planeResolver) (*mcp.CallToolResult, error) {
 	proj, err := resolver.ResolveProject(ctx, args.Project)
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to resolve project %q: %v", args.Project, err)), nil
@@ -1610,13 +1641,13 @@ func extractAssigneeIDs(assignees []plane.Expandable[plane.Member]) []string {
 	return ids
 }
 
-// addLabel implements the add_label tool logic.
+// addLabelToWorkItem implements the add_label_to_work_item tool logic.
 //
 // Non-atomicity note: because Plane has no atomic add/remove-label endpoint,
 // this handler uses GET → mutate → PATCH-full-array. If two concurrent callers
 // modify labels on the same work item, the later PATCH replaces the entire
 // labels array and may silently overwrite the earlier change.
-func addLabel(ctx context.Context, args AddLabelArgs, client planeClient, resolver planeResolver) (*mcp.CallToolResult, error) {
+func addLabelToWorkItem(ctx context.Context, args AddLabelArgs, client planeClient, resolver planeResolver) (*mcp.CallToolResult, error) {
 	projIdentifier, seqID, err := parseIdentifier(args.Identifier)
 	if err != nil {
 		return toolError(err.Error()), nil
@@ -1647,8 +1678,8 @@ func addLabel(ctx context.Context, args AddLabelArgs, client planeClient, resolv
 	return toolText(fmt.Sprintf("Label %q attached to %s.", label.Name, args.Identifier)), nil
 }
 
-// removeLabel implements the remove_label tool logic.
-func removeLabel(ctx context.Context, args RemoveLabelArgs, client planeClient, resolver planeResolver) (*mcp.CallToolResult, error) {
+// removeLabelFromWorkItem implements the remove_label_from_work_item tool logic.
+func removeLabelFromWorkItem(ctx context.Context, args RemoveLabelArgs, client planeClient, resolver planeResolver) (*mcp.CallToolResult, error) {
 	projIdentifier, seqID, err := parseIdentifier(args.Identifier)
 	if err != nil {
 		return toolError(err.Error()), nil
@@ -1683,6 +1714,213 @@ func removeLabel(ctx context.Context, args RemoveLabelArgs, client planeClient, 
 	}
 
 	return toolText(fmt.Sprintf("Label %q removed from %s.", label.Name, args.Identifier)), nil
+}
+
+// createProjectLabel implements the create_project_label tool logic.
+func createProjectLabel(ctx context.Context, args CreateProjectLabelArgs, client planeClient, resolver planeResolver) (*mcp.CallToolResult, error) {
+	if strings.TrimSpace(args.Name) == "" {
+		return toolError("name is required"), nil
+	}
+
+	proj, err := resolver.ResolveProject(ctx, args.Project)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to resolve project %q: %v", args.Project, err)), nil
+	}
+
+	// Check for duplicate name.
+	labels, err := client.ListLabels(ctx, proj.ID)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to list labels: %v", err)), nil
+	}
+	for _, l := range labels {
+		if strings.EqualFold(l.Name, args.Name) {
+			return toolError(fmt.Sprintf("a label named %q already exists in project %q", args.Name, proj.Name)), nil
+		}
+	}
+
+	label, err := client.CreateLabel(ctx, proj.ID, args.Name, args.Color)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to create label: %v", err)), nil
+	}
+
+	return toolText(fmt.Sprintf("Label %q (id: %q, color: %q) created in project %q.", label.Name, label.ID, label.Color, proj.Name)), nil
+}
+
+// updateProjectLabel implements the update_project_label tool logic.
+func updateProjectLabel(ctx context.Context, args UpdateProjectLabelArgs, client planeClient, resolver planeResolver) (*mcp.CallToolResult, error) {
+	proj, err := resolver.ResolveProject(ctx, args.Project)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to resolve project %q: %v", args.Project, err)), nil
+	}
+
+	label, err := resolver.ResolveLabel(ctx, proj.ID, args.Label)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to resolve label %q in project %q: %v", args.Label, proj.Name, err)), nil
+	}
+
+	name := ""
+	if args.Name != nil {
+		name = *args.Name
+	}
+	color := ""
+	if args.Color != nil {
+		color = *args.Color
+	}
+	if name == "" && color == "" {
+		return toolError("at least one of name or color is required"), nil
+	}
+
+	updated, err := client.UpdateLabel(ctx, proj.ID, label.ID, name, color)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to update label: %v", err)), nil
+	}
+
+	return toolText(fmt.Sprintf("Label %q updated (name: %q, color: %q).", updated.Name, updated.Name, updated.Color)), nil
+}
+
+// deleteProjectLabel implements the delete_project_label tool logic.
+func deleteProjectLabel(ctx context.Context, args DeleteProjectLabelArgs, client planeClient, resolver planeResolver) (*mcp.CallToolResult, error) {
+	if !args.Confirm {
+		return toolError("confirm=true is required to delete a label"), nil
+	}
+
+	proj, err := resolver.ResolveProject(ctx, args.Project)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to resolve project %q: %v", args.Project, err)), nil
+	}
+
+	label, err := resolver.ResolveLabel(ctx, proj.ID, args.Label)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to resolve label %q in project %q: %v", args.Label, proj.Name, err)), nil
+	}
+
+	if err := client.DeleteLabel(ctx, proj.ID, label.ID); err != nil {
+		return toolError(fmt.Sprintf("failed to delete label: %v", err)), nil
+	}
+
+	return toolText(fmt.Sprintf("Label %q deleted from project %q.", label.Name, proj.Name)), nil
+}
+
+// standardLabelDefs returns the canonical standard label taxonomy as a map of
+// label group names to label definitions.
+type standardLabelDef struct {
+	Name  string
+	Color string
+}
+
+func standardLabelDefs() map[string][]standardLabelDef {
+	return map[string][]standardLabelDef{
+		"role": {
+			{Name: "role:planner", Color: "#06b6d4"},
+			{Name: "role:orchestrator", Color: "#8b5cf6"},
+			{Name: "role:executor", Color: "#10b981"},
+			{Name: "role:reviewer", Color: "#e11d48"},
+			{Name: "role:researcher", Color: "#f472b6"},
+		},
+		"type": {
+			{Name: "type:bug", Color: "#ef4444"},
+			{Name: "type:feature", Color: "#3b82f6"},
+			{Name: "type:chore", Color: "#9ca3af"},
+			{Name: "type:infra", Color: "#f97316"},
+			{Name: "type:research", Color: "#a855f7"},
+			{Name: "type:propagation", Color: "#f59e0b"},
+		},
+		"source": {
+			{Name: "source:human", Color: "#f59e0b"},
+			{Name: "source:agent", Color: "#6366f1"},
+		},
+		"review": {
+			{Name: "review:standard", Color: "#0693e3"},
+			{Name: "review:adversarial", Color: "#ff6900"},
+		},
+		"review-tier": {
+			{Name: "review-tier:fast", Color: "#22c55e"},
+			{Name: "review-tier:pro", Color: "#eab308"},
+			{Name: "review-tier:deep", Color: "#dc2626"},
+		},
+	}
+}
+
+// provisionStandardLabels implements the provision_standard_labels tool logic.
+func provisionStandardLabels(ctx context.Context, args ProvisionStandardLabelsArgs, client planeClient, resolver planeResolver) (*mcp.CallToolResult, error) {
+	var projects []plane.Project
+
+	if strings.EqualFold(args.Project, "all") {
+		var err error
+		projects, err = client.ListProjects(ctx)
+		if err != nil {
+			return toolError(fmt.Sprintf("failed to list projects: %v", err)), nil
+		}
+	} else {
+		proj, err := resolver.ResolveProject(ctx, args.Project)
+		if err != nil {
+			return toolError(fmt.Sprintf("failed to resolve project %q: %v", args.Project, err)), nil
+		}
+		projects = []plane.Project{*proj}
+	}
+
+	defs := standardLabelDefs()
+	var b strings.Builder
+
+	// Collect all groups in display order.
+	groups := []struct {
+		Group string
+		Defs  []standardLabelDef
+	}{
+		{"role", defs["role"]},
+		{"type", defs["type"]},
+		{"source", defs["source"]},
+		{"review", defs["review"]},
+		{"review-tier", defs["review-tier"]},
+	}
+
+	for _, proj := range projects {
+		existing, err := client.ListLabels(ctx, proj.ID)
+		if err != nil {
+			log.Printf("warning: failed to list labels for project %q (%s): %v", proj.Name, proj.ID, err)
+			continue
+		}
+
+		existingByName := make(map[string]bool, len(existing))
+		for _, l := range existing {
+			existingByName[strings.ToLower(l.Name)] = true
+		}
+
+		var created []string
+		var skipped []string
+
+		for _, grp := range groups {
+			for _, def := range grp.Defs {
+				if existingByName[strings.ToLower(def.Name)] {
+					skipped = append(skipped, def.Name)
+					continue
+				}
+				if args.DryRun {
+					created = append(created, def.Name+" (dry-run)")
+				} else {
+					label, err := client.CreateLabel(ctx, proj.ID, def.Name, def.Color)
+					if err != nil {
+						log.Printf("warning: failed to create label %q in project %q: %v", def.Name, proj.Name, err)
+						continue
+					}
+					created = append(created, label.Name)
+				}
+			}
+		}
+
+		fmt.Fprintf(&b, "Project: %q (%s)\n", proj.Name, proj.Identifier)
+		if args.DryRun {
+			fmt.Fprintf(&b, "  [dry-run] Would create %d label(s)\n", len(created))
+		} else {
+			fmt.Fprintf(&b, "  Created %d label(s)\n", len(created))
+		}
+		if len(skipped) > 0 {
+			fmt.Fprintf(&b, "  Skipped %d existing label(s)\n", len(skipped))
+		}
+		b.WriteString("\n")
+	}
+
+	return toolText(strings.TrimSpace(b.String())), nil
 }
 
 // assignWorkItem implements the assign_work_item tool logic.
@@ -2156,6 +2394,8 @@ var plannerFullReviewer = []string{"planner", "full", "reviewer"}
 
 func registerWithDeps(server *mcp.Server, client planeClient, resolver planeResolver, formatter planeFormatter, cfg *config.Config) {
 	falsePtr := false
+	truePtr := true
+	falseOW := false
 
 	if shouldRegister("find_my_work", workerPlannerFullReviewer, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
@@ -2179,13 +2419,13 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		})
 	}
 
-	if shouldRegister("list_labels", workerPlannerFullReviewer, cfg) {
+	if shouldRegister("list_project_labels", workerPlannerFullReviewer, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
-			Name:        "list_labels",
+			Name:        "list_project_labels",
 			Description: "List all labels in a project, returning each label's id, name, and color.",
-			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: &falseOW},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args ListLabelsArgs) (*mcp.CallToolResult, any, error) {
-			result, err := listLabels(ctx, args, client, resolver)
+			result, err := listProjectLabels(ctx, args, client, resolver)
 			return result, nil, err
 		})
 	}
@@ -2194,31 +2434,75 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "list_states",
 			Description: "List all states in a project, returning each state's id, name, and group.",
-			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: &falseOW},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args ListStatesArgs) (*mcp.CallToolResult, any, error) {
 			result, err := listStates(ctx, args, client, resolver)
 			return result, nil, err
 		})
 	}
 
-	if shouldRegister("add_label", plannerFull, cfg) {
+	if shouldRegister("add_label_to_work_item", plannerFull, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
-			Name:        "add_label",
+			Name:        "add_label_to_work_item",
 			Description: "Attach a label (by name or id) to a work item. Idempotent — returns success if the label is already attached.",
-			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, IdempotentHint: true},
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &falsePtr, IdempotentHint: true, OpenWorldHint: &falseOW},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args AddLabelArgs) (*mcp.CallToolResult, any, error) {
-			result, err := addLabel(ctx, args, client, resolver)
+			result, err := addLabelToWorkItem(ctx, args, client, resolver)
 			return result, nil, err
 		})
 	}
 
-	if shouldRegister("remove_label", plannerFull, cfg) {
+	if shouldRegister("remove_label_from_work_item", plannerFull, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
-			Name:        "remove_label",
+			Name:        "remove_label_from_work_item",
 			Description: "Detach a label (by name or id) from a work item. Idempotent — returns success if the label is already absent.",
-			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, IdempotentHint: true},
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &truePtr, IdempotentHint: true, OpenWorldHint: &falseOW},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args RemoveLabelArgs) (*mcp.CallToolResult, any, error) {
-			result, err := removeLabel(ctx, args, client, resolver)
+			result, err := removeLabelFromWorkItem(ctx, args, client, resolver)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("create_project_label", plannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "create_project_label",
+			Description: "Create a label definition in a project. Errors if a label with that name already exists (idempotency is the provisioner's job, not this primitive's).",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &falsePtr, IdempotentHint: false, OpenWorldHint: &falseOW},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args CreateProjectLabelArgs) (*mcp.CallToolResult, any, error) {
+			result, err := createProjectLabel(ctx, args, client, resolver)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("update_project_label", plannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "update_project_label",
+			Description: "Update a label definition in a project. Resolve label by name or id; rename and/or recolor.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &truePtr, IdempotentHint: true, OpenWorldHint: &falseOW},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args UpdateProjectLabelArgs) (*mcp.CallToolResult, any, error) {
+			result, err := updateProjectLabel(ctx, args, client, resolver)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("delete_project_label", plannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "delete_project_label",
+			Description: "Delete a label definition from a project. Requires confirm=true; errors on missing label.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &truePtr, IdempotentHint: false, OpenWorldHint: &falseOW},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args DeleteProjectLabelArgs) (*mcp.CallToolResult, any, error) {
+			result, err := deleteProjectLabel(ctx, args, client, resolver)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("provision_standard_labels", plannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "provision_standard_labels",
+			Description: "Idempotently batch-create the standard label taxonomy in one project or across all projects. dry_run:true previews without writing. Re-run is a no-op.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &falsePtr, IdempotentHint: true, OpenWorldHint: &falseOW},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args ProvisionStandardLabelsArgs) (*mcp.CallToolResult, any, error) {
+			result, err := provisionStandardLabels(ctx, args, client, resolver)
 			return result, nil, err
 		})
 	}
@@ -2414,7 +2698,6 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 		})
 	}
 
-	truePtr := true
 	if shouldRegister("move_work_item", plannerFull, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "move_work_item",

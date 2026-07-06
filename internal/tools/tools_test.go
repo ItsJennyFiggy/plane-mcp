@@ -559,6 +559,9 @@ type mockClient struct {
 	createWorkItemLinkFn      func(ctx context.Context, projectID, itemID, linkURL, title string) error
 	addWorkItemsToModuleFn    func(ctx context.Context, projectID, moduleID string, workItemIDs []string) error
 	listLabelsFn              func(ctx context.Context, projectID string) ([]plane.Label, error)
+	createLabelFn             func(ctx context.Context, projectID, name, color string) (*plane.Label, error)
+	updateLabelFn             func(ctx context.Context, projectID, labelID, name, color string) (*plane.Label, error)
+	deleteLabelFn             func(ctx context.Context, projectID, labelID string) error
 	listStatesFn              func(ctx context.Context, projectID string) ([]plane.State, error)
 	listModulesFn             func(ctx context.Context, projectID string) ([]plane.Module, error)
 	listCommentsFn            func(ctx context.Context, projectID, workItemID string) ([]plane.Comment, error)
@@ -598,6 +601,15 @@ func (m *mockClient) AddWorkItemsToModule(ctx context.Context, projectID, module
 }
 func (m *mockClient) ListLabels(ctx context.Context, projectID string) ([]plane.Label, error) {
 	return m.listLabelsFn(ctx, projectID)
+}
+func (m *mockClient) CreateLabel(ctx context.Context, projectID, name, color string) (*plane.Label, error) {
+	return m.createLabelFn(ctx, projectID, name, color)
+}
+func (m *mockClient) UpdateLabel(ctx context.Context, projectID, labelID, name, color string) (*plane.Label, error) {
+	return m.updateLabelFn(ctx, projectID, labelID, name, color)
+}
+func (m *mockClient) DeleteLabel(ctx context.Context, projectID, labelID string) error {
+	return m.deleteLabelFn(ctx, projectID, labelID)
 }
 func (m *mockClient) ListStates(ctx context.Context, projectID string) ([]plane.State, error) {
 	return m.listStatesFn(ctx, projectID)
@@ -2039,9 +2051,9 @@ func TestRegisterWithDeps_FullProfile(t *testing.T) {
 
 func TestRegisterWithDeps_WorkerProfile(t *testing.T) {
 	// Arrange — worker profile registers 8 tools:
-	// find_my_work, list_projects, list_labels, list_states,
+	// find_my_work, list_projects, list_project_labels, list_states,
 	// get_work_item, report_progress, add_comment, submit_for_review.
-	// add_label and remove_label are excluded (planner+full only).
+	// add_label_to_work_item and remove_label_from_work_item are excluded (planner+full only).
 	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
 	client := &mockClient{}
 	resolver := &mockResolver{}
@@ -2093,7 +2105,7 @@ func TestRegisterWithDeps_ReviewerProfile(t *testing.T) {
 	//
 	// The 9 INTENDED tools under the reviewer profile:
 	intendedByWorkerPlanner := []string{
-		"find_my_work", "list_projects", "list_labels", "list_states",
+		"find_my_work", "list_projects", "list_project_labels", "list_states",
 		"get_work_item", "add_comment",
 	}
 	intendedByPlanner := []string{
@@ -2117,12 +2129,14 @@ func TestRegisterWithDeps_ReviewerProfile(t *testing.T) {
 		"report_progress", "submit_for_review",
 	}
 	excludedByPlanner := []string{
-		"add_label", "remove_label", "create_task", "assign_work_item", "update_work_item",
+		"add_label_to_work_item", "remove_label_from_work_item", "create_project_label",
+		"update_project_label", "delete_project_label", "provision_standard_labels",
+		"create_task", "assign_work_item", "update_work_item",
 		"set_relation", "remove_relation", "list_relations",
 		"set_parent", "clear_parent", "list_children",
 		"move_work_item", "search_work_items",
 	}
-	// Total excluded = 15
+	// Total excluded = 18
 
 	for _, name := range excludedByWorkerPlanner {
 		if shouldRegister(name, workerPlannerFull, cfg) {
@@ -2752,7 +2766,7 @@ func TestCreateTask_InvalidParent(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// listLabels handler tests (AGENT-30)
+// listProjectLabels handler tests (AGENT-30)
 // ---------------------------------------------------------------------------
 
 // TestListLabels_Success — happy path: labels found and formatted.
@@ -2776,7 +2790,7 @@ func TestListLabels_Success(t *testing.T) {
 	args := ListLabelsArgs{Project: "My Project"}
 
 	// Act
-	result, err := listLabels(ctx, args, client, resolver)
+	result, err := 	listProjectLabels(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -2822,7 +2836,7 @@ func TestListLabels_YAMLRoundTrip(t *testing.T) {
 	args := ListLabelsArgs{Project: "Test"}
 
 	// Act
-	result, err := listLabels(ctx, args, client, resolver)
+	result, err := 	listProjectLabels(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -2872,7 +2886,7 @@ func TestListLabels_Empty(t *testing.T) {
 	args := ListLabelsArgs{Project: "Empty Project"}
 
 	// Act
-	result, err := listLabels(ctx, args, client, resolver)
+	result, err := 	listProjectLabels(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -2900,7 +2914,7 @@ func TestListLabels_ProjectResolutionError(t *testing.T) {
 	args := ListLabelsArgs{Project: "Unknown"}
 
 	// Act
-	result, err := listLabels(ctx, args, client, resolver)
+	result, err := 	listProjectLabels(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -2928,7 +2942,7 @@ func TestListLabels_ClientError(t *testing.T) {
 	args := ListLabelsArgs{Project: "My Project"}
 
 	// Act
-	result, err := listLabels(ctx, args, client, resolver)
+	result, err := 	listProjectLabels(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3037,7 +3051,7 @@ func TestListProjects_Error(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// add_label handler tests (AGENT-34)
+// add_label_to_work_item handler tests (AGENT-34)
 // ---------------------------------------------------------------------------
 
 // TestAddLabel_Success — happy path: label resolved and attached.
@@ -3067,7 +3081,7 @@ func TestAddLabel_Success(t *testing.T) {
 	args := AddLabelArgs{Identifier: "PROJ-1", Label: "enhancement"}
 
 	// Act
-	result, err := addLabel(ctx, args, client, resolver)
+	result, err := 	addLabelToWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3115,7 +3129,7 @@ func TestAddLabel_AlreadyAttached(t *testing.T) {
 	args := AddLabelArgs{Identifier: "PROJ-1", Label: "feature"}
 
 	// Act
-	result, err := addLabel(ctx, args, client, resolver)
+	result, err := 	addLabelToWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3151,7 +3165,7 @@ func TestAddLabel_UnknownLabel(t *testing.T) {
 	args := AddLabelArgs{Identifier: "PROJ-1", Label: "nonexistent"}
 
 	// Act
-	result, err := addLabel(ctx, args, client, resolver)
+	result, err := 	addLabelToWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3171,7 +3185,7 @@ func TestAddLabel_InvalidIdentifier(t *testing.T) {
 	args := AddLabelArgs{Identifier: "bad", Label: "bug"}
 
 	// Act
-	result, err := addLabel(ctx, args, client, resolver)
+	result, err := 	addLabelToWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3195,7 +3209,7 @@ func TestAddLabel_WorkItemNotFound(t *testing.T) {
 	args := AddLabelArgs{Identifier: "PROJ-1", Label: "bug"}
 
 	// Act
-	result, err := addLabel(ctx, args, client, resolver)
+	result, err := 	addLabelToWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3231,7 +3245,7 @@ func TestAddLabel_UpdateError(t *testing.T) {
 	args := AddLabelArgs{Identifier: "PROJ-1", Label: "bug"}
 
 	// Act
-	result, err := addLabel(ctx, args, client, resolver)
+	result, err := 	addLabelToWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3269,7 +3283,7 @@ func TestAddLabel_ResolveByName(t *testing.T) {
 	args := AddLabelArgs{Identifier: "PROJ-1", Label: "critical"}
 
 	// Act
-	result, err := addLabel(ctx, args, client, resolver)
+	result, err := 	addLabelToWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3284,7 +3298,7 @@ func TestAddLabel_ResolveByName(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// remove_label handler tests (AGENT-34)
+// remove_label_from_work_item handler tests (AGENT-34)
 // ---------------------------------------------------------------------------
 
 // TestRemoveLabel_Success — happy path: label resolved and removed.
@@ -3314,7 +3328,7 @@ func TestRemoveLabel_Success(t *testing.T) {
 	args := RemoveLabelArgs{Identifier: "PROJ-1", Label: "bug"}
 
 	// Act
-	result, err := removeLabel(ctx, args, client, resolver)
+	result, err := 	removeLabelFromWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3359,7 +3373,7 @@ func TestRemoveLabel_NotAttached(t *testing.T) {
 	args := RemoveLabelArgs{Identifier: "PROJ-1", Label: "bug"}
 
 	// Act
-	result, err := removeLabel(ctx, args, client, resolver)
+	result, err := 	removeLabelFromWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3394,7 +3408,7 @@ func TestRemoveLabel_UnknownLabel(t *testing.T) {
 	args := RemoveLabelArgs{Identifier: "PROJ-1", Label: "nonexistent"}
 
 	// Act
-	result, err := removeLabel(ctx, args, client, resolver)
+	result, err := 	removeLabelFromWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3414,7 +3428,7 @@ func TestRemoveLabel_InvalidIdentifier(t *testing.T) {
 	args := RemoveLabelArgs{Identifier: "bad", Label: "bug"}
 
 	// Act
-	result, err := removeLabel(ctx, args, client, resolver)
+	result, err := 	removeLabelFromWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3452,7 +3466,7 @@ func TestRemoveLabel_RemoveAll(t *testing.T) {
 	args := RemoveLabelArgs{Identifier: "PROJ-1", Label: "only"}
 
 	// Act
-	result, err := removeLabel(ctx, args, client, resolver)
+	result, err := 	removeLabelFromWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3495,7 +3509,7 @@ func TestRemoveLabel_UpdateError(t *testing.T) {
 	args := RemoveLabelArgs{Identifier: "PROJ-1", Label: "bug"}
 
 	// Act
-	result, err := removeLabel(ctx, args, client, resolver)
+	result, err := 	removeLabelFromWorkItem(ctx, args, client, resolver)
 
 	// Assert
 	if err != nil {
@@ -3539,10 +3553,10 @@ func TestExtractLabelIDs_Empty(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TestRegisterWithDeps verifies add_label / remove_label are registered
+// TestRegisterWithDeps verifies add_label_to_work_item / remove_label_from_work_item are registered
 // ---------------------------------------------------------------------------
 
-// TestRegisterWithDeps_AddRemoveLabel — add_label and remove_label are
+// TestRegisterWithDeps_AddRemoveLabel — add_label_to_work_item and remove_label_from_work_item are
 // NOT registered under the worker profile (they are planner+full only,
 // matching assign_work_item's scoping).
 func TestRegisterWithDeps_AddRemoveLabel(t *testing.T) {
@@ -3552,24 +3566,24 @@ func TestRegisterWithDeps_AddRemoveLabel(t *testing.T) {
 	resolver := &mockResolver{}
 	formatter := &mockFormatter{}
 
-	// Worker profile — add_label and remove_label should NOT register.
+	// Worker profile — add_label_to_work_item and remove_label_from_work_item should NOT register.
 	workerCfg := &config.Config{PlaneMCPProfile: "worker"}
 	registerWithDeps(server, client, resolver, formatter, workerCfg)
 
-	if shouldRegister("add_label", plannerFull, workerCfg) {
-		t.Error("add_label should NOT register under worker profile")
+	if shouldRegister("add_label_to_work_item", plannerFull, workerCfg) {
+		t.Error("add_label_to_work_item should NOT register under worker profile")
 	}
-	if shouldRegister("remove_label", plannerFull, workerCfg) {
-		t.Error("remove_label should NOT register under worker profile")
+	if shouldRegister("remove_label_from_work_item", plannerFull, workerCfg) {
+		t.Error("remove_label_from_work_item should NOT register under worker profile")
 	}
 
 	// Planner profile — both tools SHOULD register.
 	plannerCfg := &config.Config{PlaneMCPProfile: "planner"}
-	if !shouldRegister("add_label", plannerFull, plannerCfg) {
-		t.Error("add_label SHOULD register under planner profile")
+	if !shouldRegister("add_label_to_work_item", plannerFull, plannerCfg) {
+		t.Error("add_label_to_work_item SHOULD register under planner profile")
 	}
-	if !shouldRegister("remove_label", plannerFull, plannerCfg) {
-		t.Error("remove_label SHOULD register under planner profile")
+	if !shouldRegister("remove_label_from_work_item", plannerFull, plannerCfg) {
+		t.Error("remove_label_from_work_item SHOULD register under planner profile")
 	}
 }
 
@@ -4022,7 +4036,7 @@ func TestExtractAssigneeIDs_Empty(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestRegisterWithDeps_ListStates — list_states must register under the worker
-// profile (same scope as list_labels).
+// profile (same scope as list_project_labels).
 func TestRegisterWithDeps_ListStates(t *testing.T) {
 	// Arrange
 	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
@@ -5764,9 +5778,9 @@ func TestToolAnnotations(t *testing.T) {
 
 	// Read-only tools: readOnlyHint=true
 	readOnlyTools := []string{
-		"find_my_work", "get_work_item", "list_labels", "list_projects",
+		"find_my_work", "get_work_item", "list_project_labels", "list_projects",
 		"search_work_items", "list_states", "list_comments", "get_last_comment",
-		"list_work_items",
+		"list_work_items", "list_modules", "list_relations", "list_children",
 	}
 	for _, name := range readOnlyTools {
 		tool, ok := toolsByName[name]
@@ -5784,7 +5798,7 @@ func TestToolAnnotations(t *testing.T) {
 	}
 
 	// Idempotent read-write tools: readOnlyHint=false, idempotentHint=true
-	idempotentTools := []string{"report_progress", "add_label", "remove_label", "assign_work_item"}
+	idempotentTools := []string{"report_progress", "add_label_to_work_item", "remove_label_from_work_item", "assign_work_item", "provision_standard_labels"}
 	for _, name := range idempotentTools {
 		tool, ok := toolsByName[name]
 		if !ok {
@@ -5804,7 +5818,7 @@ func TestToolAnnotations(t *testing.T) {
 	}
 
 	// Non-destructive write tools: readOnlyHint=false, destructiveHint=false
-	nonDestructiveTools := []string{"create_task", "submit_for_review"}
+	nonDestructiveTools := []string{"create_task", "submit_for_review", "create_project_label"}
 	for _, name := range nonDestructiveTools {
 		tool, ok := toolsByName[name]
 		if !ok {
@@ -5822,6 +5836,28 @@ func TestToolAnnotations(t *testing.T) {
 			t.Errorf("tool %q: expected DestructiveHint to be set, got nil", name)
 		} else if *tool.Annotations.DestructiveHint {
 			t.Errorf("tool %q: expected DestructiveHint=false, got true", name)
+		}
+	}
+
+	// Destructive write tools: readOnlyHint=false, destructiveHint=true
+	destructiveTools := []string{"move_work_item", "update_project_label", "delete_project_label"}
+	for _, name := range destructiveTools {
+		tool, ok := toolsByName[name]
+		if !ok {
+			t.Errorf("tool %q not found in ListTools response", name)
+			continue
+		}
+		if tool.Annotations == nil {
+			t.Errorf("tool %q: expected Annotations, got nil", name)
+			continue
+		}
+		if tool.Annotations.ReadOnlyHint {
+			t.Errorf("tool %q: expected ReadOnlyHint=false, got true", name)
+		}
+		if tool.Annotations.DestructiveHint == nil {
+			t.Errorf("tool %q: expected DestructiveHint to be set, got nil", name)
+		} else if !*tool.Annotations.DestructiveHint {
+			t.Errorf("tool %q: expected DestructiveHint=true, got false", name)
 		}
 	}
 
