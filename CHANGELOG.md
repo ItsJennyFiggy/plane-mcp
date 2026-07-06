@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.16.0] — Unreleased
+
+### Features
+
+* **tools:** add `create_project_label`, `update_project_label`, `delete_project_label`, `provision_standard_labels` tools (planner+full only) (AGENT-176)
+* **plane:** add `CreateLabel`, `UpdateLabel`, `DeleteLabel` client methods (AGENT-176)
+* **tools:** add `mcp.ToolAnnotations` (readOnlyHint/destructiveHint/idempotentHint/openWorldHint) to all label-related tools (AGENT-176)
+
+### Breaking changes
+
+* **tools:** rename label tools for disambiguation — `add_label` → `add_label_to_work_item`, `remove_label` → `remove_label_from_work_item`, `list_labels` → `list_project_labels` (AGENT-176)
+
 ## [1.15.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.14.0...v1.15.0) (2026-06-29)
 
 

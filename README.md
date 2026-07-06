@@ -188,7 +188,7 @@ A `ping` tool is always registered (connection check), regardless of profile. Th
 | `find_my_work` | List work items assigned to the current user, optionally filtered by project/state group. | ✅ | ✅ | ✅ | ✅ |
 | `get_work_item` | Retrieve a single work item by identifier (e.g. `PROJ-123`). | ✅ | ✅ | ✅ | ✅ |
 | `list_projects` | List all projects (identifier, name, id). | ✅ | ✅ | ✅ | ✅ |
-| `list_labels` | List all labels in a project. | ✅ | ✅ | ✅ | ✅ |
+| `list_project_labels` | List all labels in a project. | ✅ | ✅ | ✅ | ✅ |
 | `list_modules` | List all modules in a project. | ✅ | ✅ | ✅ | ✅ |
 | `list_states` | List all states in a project. | ✅ | ✅ | ✅ | ✅ |
 | `list_work_items` | List work items in a project with optional filters. | | ✅ | ✅ | ✅ |
@@ -209,10 +209,14 @@ A `ping` tool is always registered (connection check), regardless of profile. Th
 ### Labels & assignees
 
 | Tool | Description | `worker` | `reviewer` | `planner` | `full` |
-|---|---|:---:|:---:|:---:|:---:|
-| `add_label` | Attach a label (by name or id) to a work item. |   | | ✅ | ✅ |
-| `remove_label` | Detach a label (by name or id) from a work item. |   | | ✅ | ✅ |
+|---|---|---|:---:|:---:|:---:|
+| `add_label_to_work_item` | Attach a label (by name or id) to a work item. | | | ✅ | ✅ |
+| `remove_label_from_work_item` | Detach a label (by name or id) from a work item. | | | ✅ | ✅ |
 | `assign_work_item` | Set / add / remove assignees by name, email, or id. | | | ✅ | ✅ |
+| `create_project_label` | Create a label definition in a project. | | | ✅ | ✅ |
+| `update_project_label` | Rename and/or recolor a label definition. | | | ✅ | ✅ |
+| `delete_project_label` | Delete a label definition (requires `confirm:true`). | | | ✅ | ✅ |
+| `provision_standard_labels` | Idempotently batch-create the standard label taxonomy in one project or all projects. `dry_run:true` previews without writing. | | | ✅ | ✅ |
 
 ### Create, update & hierarchy
 

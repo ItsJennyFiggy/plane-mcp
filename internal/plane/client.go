@@ -578,3 +578,45 @@ func (c *Client) DeleteWorkItem(ctx context.Context, projectID, workItemID strin
 	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/work-items/%s/", c.WorkspaceSlug, projectID, workItemID)
 	return c.request(ctx, "DELETE", path, nil, nil, nil)
 }
+
+// CreateLabel creates a new label definition in a project.
+// Path: POST /api/v1/workspaces/{slug}/projects/{projectID}/labels/
+func (c *Client) CreateLabel(ctx context.Context, projectID, name, color string) (*Label, error) {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/labels/", c.WorkspaceSlug, projectID)
+	body := map[string]any{"name": name}
+	if color != "" {
+		body["color"] = color
+	}
+	var label Label
+	err := c.request(ctx, "POST", path, nil, body, &label)
+	if err != nil {
+		return nil, err
+	}
+	return &label, nil
+}
+
+// UpdateLabel updates a label definition (name and/or color) in a project.
+// Path: PATCH /api/v1/workspaces/{slug}/projects/{projectID}/labels/{labelID}/
+func (c *Client) UpdateLabel(ctx context.Context, projectID, labelID, name, color string) (*Label, error) {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/labels/%s/", c.WorkspaceSlug, projectID, labelID)
+	body := map[string]any{}
+	if name != "" {
+		body["name"] = name
+	}
+	if color != "" {
+		body["color"] = color
+	}
+	var label Label
+	err := c.request(ctx, "PATCH", path, nil, body, &label)
+	if err != nil {
+		return nil, err
+	}
+	return &label, nil
+}
+
+// DeleteLabel deletes a label definition from a project.
+// Path: DELETE /api/v1/workspaces/{slug}/projects/{projectID}/labels/{labelID}/
+func (c *Client) DeleteLabel(ctx context.Context, projectID, labelID string) error {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/labels/%s/", c.WorkspaceSlug, projectID, labelID)
+	return c.request(ctx, "DELETE", path, nil, nil, nil)
+}
