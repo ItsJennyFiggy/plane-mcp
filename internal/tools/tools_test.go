@@ -9043,3 +9043,511 @@ func TestUpdateWorkItem_ModuleOnlyEmpty(t *testing.T) {
 		t.Errorf("expected 'at least one' required field message, got: %s", text)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// create_project_label handler tests (AGENT-176)
+// ---------------------------------------------------------------------------
+
+// TestCreateProjectLabel_Success — happy path: new label created.
+func TestCreateProjectLabel_Success(t *testing.T) {
+	ctx := context.Background()
+	var capturedName, capturedColor string
+	client := &mockClient{
+		listLabelsFn: func(ctx context.Context, projectID string) ([]plane.Label, error) {
+			return []plane.Label{{ID: "lbl-existing", Name: "existing", Color: "#fff"}}, nil
+		},
+		createLabelFn: func(ctx context.Context, projectID, name, color string) (*plane.Label, error) {
+			capturedName = name
+			capturedColor = color
+			return &plane.Label{ID: "lbl-new", Name: name, Color: color}, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "Test Project"}, nil
+		},
+	}
+	args := CreateProjectLabelArgs{Project: "Test", Name: "bug", Color: "#ff0000"}
+
+	result, err := createProjectLabel(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got error: %+v", result.Content)
+	}
+	if capturedName != "bug" {
+		t.Errorf("expected name 'bug', got %q", capturedName)
+	}
+	if capturedColor != "#ff0000" {
+		t.Errorf("expected color '#ff0000', got %q", capturedColor)
+	}
+}
+
+// TestCreateProjectLabel_DuplicateName — error when label name already exists.
+func TestCreateProjectLabel_DuplicateName(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		listLabelsFn: func(ctx context.Context, projectID string) ([]plane.Label, error) {
+			return []plane.Label{{ID: "lbl-ex", Name: "bug", Color: "#f00"}}, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "Test"}, nil
+		},
+	}
+	args := CreateProjectLabelArgs{Project: "Test", Name: "bug"}
+
+	result, err := createProjectLabel(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true for duplicate name, got success")
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "already exists") {
+		t.Errorf("expected 'already exists' message, got: %s", text)
+	}
+}
+
+// TestCreateProjectLabel_ClientError — error when ListLabels or CreateLabel fails.
+func TestCreateProjectLabel_ClientError(t *testing.T) {
+	ctx := context.Background()
+
+	// ListLabels fails
+	client := &mockClient{
+		listLabelsFn: func(ctx context.Context, projectID string) ([]plane.Label, error) {
+			return nil, errors.New("network error")
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "Test"}, nil
+		},
+	}
+	args := CreateProjectLabelArgs{Project: "Test", Name: "bug", Color: "#ff0000"}
+	result, err := createProjectLabel(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true on ListLabels failure, got success")
+	}
+}
+
+// TestCreateProjectLabel_EmptyName — error when name is empty.
+func TestCreateProjectLabel_EmptyName(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{}
+	resolver := &mockResolver{}
+	args := CreateProjectLabelArgs{Project: "Test", Name: ""}
+
+	result, err := createProjectLabel(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true for empty name, got success")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// update_project_label handler tests (AGENT-176)
+// ---------------------------------------------------------------------------
+
+// TestUpdateProjectLabel_Rename — happy path: rename succeeds.
+func TestUpdateProjectLabel_Rename(t *testing.T) {
+	ctx := context.Background()
+	var capturedName, capturedColor string
+	client := &mockClient{
+		updateLabelFn: func(ctx context.Context, projectID, labelID, name, color string) (*plane.Label, error) {
+			capturedName = name
+			capturedColor = color
+			return &plane.Label{ID: labelID, Name: name, Color: "#000"}, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "Test"}, nil
+		},
+		resolveLabelFn: func(ctx context.Context, projectID, input string) (*plane.Label, error) {
+			return &plane.Label{ID: "lbl-1", Name: "bug", Color: "#f00"}, nil
+		},
+	}
+	name := "feature"
+	args := UpdateProjectLabelArgs{Project: "Test", Label: "bug", Name: &name}
+
+	result, err := updateProjectLabel(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got error: %+v", result.Content)
+	}
+	if capturedName != "feature" {
+		t.Errorf("expected name 'feature', got %q", capturedName)
+	}
+	if capturedColor != "" {
+		t.Errorf("expected empty color, got %q", capturedColor)
+	}
+}
+
+// TestUpdateProjectLabel_Recolor — happy path: recolor succeeds.
+func TestUpdateProjectLabel_Recolor(t *testing.T) {
+	ctx := context.Background()
+	var capturedName, capturedColor string
+	client := &mockClient{
+		updateLabelFn: func(ctx context.Context, projectID, labelID, name, color string) (*plane.Label, error) {
+			capturedName = name
+			capturedColor = color
+			return &plane.Label{ID: labelID, Name: "bug", Color: color}, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "Test"}, nil
+		},
+		resolveLabelFn: func(ctx context.Context, projectID, input string) (*plane.Label, error) {
+			return &plane.Label{ID: "lbl-1", Name: "bug", Color: "#f00"}, nil
+		},
+	}
+	color := "#00ff00"
+	args := UpdateProjectLabelArgs{Project: "Test", Label: "bug", Color: &color}
+
+	result, err := updateProjectLabel(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got error: %+v", result.Content)
+	}
+	if capturedName != "" {
+		t.Errorf("expected empty name, got %q", capturedName)
+	}
+	if capturedColor != "#00ff00" {
+		t.Errorf("expected color '#00ff00', got %q", capturedColor)
+	}
+}
+
+// TestUpdateProjectLabel_ClientError — error when UpdateLabel fails.
+func TestUpdateProjectLabel_ClientError(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		updateLabelFn: func(ctx context.Context, projectID, labelID, name, color string) (*plane.Label, error) {
+			return nil, errors.New("update failed")
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "Test"}, nil
+		},
+		resolveLabelFn: func(ctx context.Context, projectID, input string) (*plane.Label, error) {
+			return &plane.Label{ID: "lbl-1", Name: "bug", Color: "#f00"}, nil
+		},
+	}
+	name := "new-name"
+	args := UpdateProjectLabelArgs{Project: "Test", Label: "bug", Name: &name}
+	result, err := updateProjectLabel(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true on UpdateLabel failure, got success")
+	}
+}
+
+// TestUpdateProjectLabel_NotFound — error when label is not found.
+func TestUpdateProjectLabel_NotFound(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "Test"}, nil
+		},
+		resolveLabelFn: func(ctx context.Context, projectID, input string) (*plane.Label, error) {
+			return nil, errors.New("label not found")
+		},
+	}
+	name := "new-name"
+	args := UpdateProjectLabelArgs{Project: "Test", Label: "nonexistent", Name: &name}
+
+	result, err := updateProjectLabel(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true for missing label, got success")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// delete_project_label handler tests (AGENT-176)
+// ---------------------------------------------------------------------------
+
+// TestDeleteProjectLabel_Success — success with confirm:true.
+func TestDeleteProjectLabel_Success(t *testing.T) {
+	ctx := context.Background()
+	var deletedLabelID string
+	client := &mockClient{
+		deleteLabelFn: func(ctx context.Context, projectID, labelID string) error {
+			deletedLabelID = labelID
+			return nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "Test"}, nil
+		},
+		resolveLabelFn: func(ctx context.Context, projectID, input string) (*plane.Label, error) {
+			return &plane.Label{ID: "lbl-1", Name: "bug", Color: "#f00"}, nil
+		},
+	}
+	args := DeleteProjectLabelArgs{Project: "Test", Label: "bug", Confirm: true}
+
+	result, err := deleteProjectLabel(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got error: %+v", result.Content)
+	}
+	if deletedLabelID != "lbl-1" {
+		t.Errorf("expected deleted label ID 'lbl-1', got %q", deletedLabelID)
+	}
+}
+
+// TestDeleteProjectLabel_NoConfirm — refusal without confirm.
+func TestDeleteProjectLabel_NoConfirm(t *testing.T) {
+	ctx := context.Background()
+	deleteCalled := false
+	client := &mockClient{
+		deleteLabelFn: func(ctx context.Context, projectID, labelID string) error {
+			deleteCalled = true
+			return nil
+		},
+	}
+	resolver := &mockResolver{}
+	args := DeleteProjectLabelArgs{Project: "Test", Label: "bug", Confirm: false}
+
+	result, err := deleteProjectLabel(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true without confirm, got success")
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "confirm=true") {
+		t.Errorf("expected 'confirm=true' message, got: %s", text)
+	}
+	if deleteCalled {
+		t.Errorf("DeleteLabel should not be called without confirm")
+	}
+}
+
+// TestDeleteProjectLabel_ClientError — error when DeleteLabel fails.
+func TestDeleteProjectLabel_ClientError(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		deleteLabelFn: func(ctx context.Context, projectID, labelID string) error {
+			return errors.New("delete failed")
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "Test"}, nil
+		},
+		resolveLabelFn: func(ctx context.Context, projectID, input string) (*plane.Label, error) {
+			return &plane.Label{ID: "lbl-1", Name: "bug", Color: "#f00"}, nil
+		},
+	}
+	args := DeleteProjectLabelArgs{Project: "Test", Label: "bug", Confirm: true}
+	result, err := deleteProjectLabel(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true on DeleteLabel failure, got success")
+	}
+}
+
+// TestDeleteProjectLabel_NotFound — error when label is not found.
+func TestDeleteProjectLabel_NotFound(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "Test"}, nil
+		},
+		resolveLabelFn: func(ctx context.Context, projectID, input string) (*plane.Label, error) {
+			return nil, errors.New("label not found")
+		},
+	}
+	args := DeleteProjectLabelArgs{Project: "Test", Label: "nonexistent", Confirm: true}
+
+	result, err := deleteProjectLabel(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true for missing label, got success")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// provision_standard_labels handler tests (AGENT-176)
+// ---------------------------------------------------------------------------
+
+// TestProvisionStandardLabels_ListProjectsError — error when listing projects for "all" fails.
+func TestProvisionStandardLabels_ListProjectsError(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{
+		listProjectsFn: func(ctx context.Context) ([]plane.Project, error) {
+			return nil, errors.New("list failed")
+		},
+	}
+	resolver := &mockResolver{}
+	args := ProvisionStandardLabelsArgs{Project: "all", DryRun: false}
+	result, err := provisionStandardLabels(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true on ListProjects failure, got success")
+	}
+}
+
+// TestProvisionStandardLabels_DryRun — dry-run lists what would be created without writing.
+func TestProvisionStandardLabels_DryRun(t *testing.T) {
+	ctx := context.Background()
+	createCalled := false
+	client := &mockClient{
+		listLabelsFn: func(ctx context.Context, projectID string) ([]plane.Label, error) {
+			return nil, nil
+		},
+		createLabelFn: func(ctx context.Context, projectID, name, color string) (*plane.Label, error) {
+			createCalled = true
+			return &plane.Label{ID: "lbl-new", Name: name, Color: color}, nil
+		},
+		listProjectsFn: func(ctx context.Context) ([]plane.Project, error) {
+			return []plane.Project{{ID: "proj-uuid", Name: "Test", Identifier: "TST"}}, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "Test", Identifier: "TST"}, nil
+		},
+	}
+	args := ProvisionStandardLabelsArgs{Project: "all", DryRun: true}
+
+	result, err := provisionStandardLabels(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got error: %+v", result.Content)
+	}
+	if createCalled {
+		t.Errorf("CreateLabel should not be called in dry-run mode")
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "dry-run") {
+		t.Errorf("expected output to mention 'dry-run', got: %s", text)
+	}
+}
+
+// TestProvisionStandardLabels_CreatesMissing — real run creates only missing labels.
+func TestProvisionStandardLabels_CreatesMissing(t *testing.T) {
+	ctx := context.Background()
+	var createCount int
+	client := &mockClient{
+		listLabelsFn: func(ctx context.Context, projectID string) ([]plane.Label, error) {
+			return []plane.Label{{ID: "lbl-role", Name: "role:planner", Color: "#000"}}, nil
+		},
+		createLabelFn: func(ctx context.Context, projectID, name, color string) (*plane.Label, error) {
+			createCount++
+			return &plane.Label{ID: "lbl-" + name, Name: name, Color: color}, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "Test", Identifier: "TST"}, nil
+		},
+	}
+	args := ProvisionStandardLabelsArgs{Project: "Test", DryRun: false}
+
+	result, err := provisionStandardLabels(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got error: %+v", result.Content)
+	}
+	// Standard taxonomy has 18 labels. One (role:planner) already exists → 17 created.
+	if createCount != 17 {
+		t.Errorf("expected 17 creates (18 standard - 1 existing), got %d", createCount)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "Created 17") {
+		t.Errorf("expected 'Created 17', got: %s", text)
+	}
+}
+
+// TestProvisionStandardLabels_ReRunNoOp — re-run after a successful run is a no-op.
+func TestProvisionStandardLabels_ReRunNoOp(t *testing.T) {
+	ctx := context.Background()
+	var createCount int
+	client := &mockClient{
+		listLabelsFn: func(ctx context.Context, projectID string) ([]plane.Label, error) {
+			// Simulate all standard labels already existing.
+			existing := []plane.Label{
+				{ID: "l1", Name: "role:planner", Color: "#06b6d4"},
+				{ID: "l2", Name: "role:orchestrator", Color: "#8b5cf6"},
+				{ID: "l3", Name: "role:executor", Color: "#10b981"},
+				{ID: "l4", Name: "role:reviewer", Color: "#e11d48"},
+				{ID: "l5", Name: "role:researcher", Color: "#f472b6"},
+				{ID: "l6", Name: "type:bug", Color: "#ef4444"},
+				{ID: "l7", Name: "type:feature", Color: "#3b82f6"},
+				{ID: "l8", Name: "type:chore", Color: "#9ca3af"},
+				{ID: "l9", Name: "type:infra", Color: "#f97316"},
+				{ID: "l10", Name: "type:research", Color: "#a855f7"},
+				{ID: "l11", Name: "type:propagation", Color: "#f59e0b"},
+				{ID: "l12", Name: "source:human", Color: "#f59e0b"},
+				{ID: "l13", Name: "source:agent", Color: "#6366f1"},
+				{ID: "l14", Name: "review:standard", Color: "#0693e3"},
+				{ID: "l15", Name: "review:adversarial", Color: "#ff6900"},
+				{ID: "l16", Name: "review-tier:fast", Color: "#22c55e"},
+				{ID: "l17", Name: "review-tier:pro", Color: "#eab308"},
+				{ID: "l18", Name: "review-tier:deep", Color: "#dc2626"},
+			}
+			return existing, nil
+		},
+		createLabelFn: func(ctx context.Context, projectID, name, color string) (*plane.Label, error) {
+			createCount++
+			return &plane.Label{ID: "lbl-" + name, Name: name, Color: color}, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "proj-uuid", Name: "Test", Identifier: "TST"}, nil
+		},
+	}
+	args := ProvisionStandardLabelsArgs{Project: "Test", DryRun: false}
+
+	result, err := provisionStandardLabels(ctx, args, client, resolver)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Errorf("expected IsError=false, got error: %+v", result.Content)
+	}
+	if createCount != 0 {
+		t.Errorf("expected 0 creates on re-run (all labels exist), got %d", createCount)
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "Skipped") {
+		t.Errorf("expected output to mention 'Skipped', got: %s", text)
+	}
+}
