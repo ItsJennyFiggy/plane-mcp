@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -13,6 +14,24 @@ import (
 	"time"
 
 	"github.com/ItsJennyFiggy/plane-mcp/internal/config"
+)
+
+// Retry policy constants for transparently recovering from downstream Plane API
+// HTTP 429 responses. Kept zero-configuration: no public knobs are exposed.
+const (
+	// defaultRetryMaxAttempts is the total number of requests made for a single
+	// call, including the initial attempt. The retry budget is exhausted after
+	// this many requests.
+	defaultRetryMaxAttempts = 4
+	// defaultRetryBaseDelay is the initial exponential backoff delay applied when
+	// no usable Retry-After value is present.
+	defaultRetryBaseDelay = 200 * time.Millisecond
+	// defaultRetryMaxDelay caps the delay for any single retry, whether derived
+	// from Retry-After or the exponential backoff fallback.
+	defaultRetryMaxDelay = 5 * time.Second
+	// defaultRetryJitterMax is the upper bound of the uniform jitter added to the
+	// exponential backoff fallback to avoid thundering-herd retries.
+	defaultRetryJitterMax = 100 * time.Millisecond
 )
 
 // Expandable represents a field that can be either a string UUID or a fully expanded object.
@@ -190,11 +209,20 @@ type Client struct {
 	HTTPClient           *http.Client
 	CFAccessClientID     string
 	CFAccessClientSecret string
+
+	// now is the clock used by retry-backoff computation. Overridable in tests.
+	now func() time.Time
+	// sleep is the wait primitive used between retry attempts. It must respect
+	// context cancellation. Overridable in tests.
+	sleep func(ctx context.Context, d time.Duration) error
+	// jitter returns the jitter applied to the exponential backoff fallback.
+	// Overridable in tests.
+	jitter func() time.Duration
 }
 
 // NewClient initializes a client from configuration
 func NewClient(cfg *config.Config) *Client {
-	return &Client{
+	c := &Client{
 		BaseURL:              strings.TrimSuffix(cfg.PlaneBaseURL, "/"),
 		APIKey:               cfg.PlaneAPIKey,
 		WorkspaceSlug:        cfg.PlaneWorkspaceSlug,
@@ -202,6 +230,74 @@ func NewClient(cfg *config.Config) *Client {
 		CFAccessClientID:     cfg.CFAccessClientID,
 		CFAccessClientSecret: cfg.CFAccessClientSecret,
 	}
+	c.now = time.Now
+	c.jitter = func() time.Duration {
+		return time.Duration(rand.Int63n(int64(defaultRetryJitterMax)))
+	}
+	c.sleep = c.sleepWithContext
+	return c
+}
+
+// sleepWithContext pauses for d, aborting early when ctx is cancelled or
+// reaches its deadline. Returning ctx.Err() lets the retry loop stop promptly
+// when the caller has given up.
+func (c *Client) sleepWithContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// retryDelay computes the delay before the next attempt. A valid Retry-After
+// value (delay-seconds or HTTP-date) wins, capped at defaultRetryMaxDelay;
+// otherwise bounded exponential backoff with jitter is used.
+func (c *Client) retryDelay(retryAfter string, attempt int) time.Duration {
+	if d, ok := parseRetryAfter(retryAfter, c.now()); ok {
+		return d
+	}
+	base := defaultRetryBaseDelay << attempt
+	if base > defaultRetryMaxDelay || base <= 0 {
+		base = defaultRetryMaxDelay
+	}
+	if c.jitter != nil {
+		base += c.jitter()
+	}
+	return base
+}
+
+// parseRetryAfter parses a Retry-After header in either delay-seconds or
+// HTTP-date form, capped at defaultRetryMaxDelay. It returns ok=false when the
+// header is empty or malformed so the caller can fall back to backoff.
+func parseRetryAfter(header string, now time.Time) (time.Duration, bool) {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return 0, false
+	}
+	if secs, err := strconv.Atoi(header); err == nil {
+		d := time.Duration(secs) * time.Second
+		if d > defaultRetryMaxDelay {
+			d = defaultRetryMaxDelay
+		}
+		return d, true
+	}
+	if t, err := http.ParseTime(header); err == nil {
+		d := t.Sub(now)
+		if d < 0 {
+			d = 0
+		}
+		if d > defaultRetryMaxDelay {
+			d = defaultRetryMaxDelay
+		}
+		return d, true
+	}
+	return 0, false
 }
 
 // request helper handles headers, method, URL, and JSON serialization/deserialization
@@ -219,52 +315,72 @@ func (c *Client) request(ctx context.Context, method, path string, queryParams m
 		u.RawQuery = q.Encode()
 	}
 
-	var reqBody io.Reader
+	var reqBody []byte
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
 			return fmt.Errorf("failed to marshal request body: %w", err)
 		}
-		reqBody = bytes.NewReader(b)
+		reqBody = b
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, u.String(), reqBody)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("X-API-Key", c.APIKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	// Apply Cloudflare Access headers if configured
-	if c.CFAccessClientID != "" && c.CFAccessClientSecret != "" {
-		req.Header.Set("CF-Access-Client-Id", c.CFAccessClientID)
-		req.Header.Set("CF-Access-Client-Secret", c.CFAccessClientSecret)
-	}
-
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	if responseVal != nil {
-		respBody, err := io.ReadAll(resp.Body)
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, method, u.String(), bytes.NewReader(reqBody))
 		if err != nil {
-			return fmt.Errorf("failed to read response body: %w", err)
+			return fmt.Errorf("failed to create request: %w", err)
 		}
 
-		if err := json.Unmarshal(respBody, responseVal); err != nil {
-			return fmt.Errorf("failed to unmarshal response: %w (body: %s)", err, string(respBody))
+		req.Header.Set("X-API-Key", c.APIKey)
+		req.Header.Set("Content-Type", "application/json")
+
+		// Apply Cloudflare Access headers if configured
+		if c.CFAccessClientID != "" && c.CFAccessClientSecret != "" {
+			req.Header.Set("CF-Access-Client-Id", c.CFAccessClientID)
+			req.Header.Set("CF-Access-Client-Secret", c.CFAccessClientSecret)
+		}
+
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("request failed: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusTooManyRequests {
+			defer resp.Body.Close()
+
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				respBody, _ := io.ReadAll(resp.Body)
+				return fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(respBody))
+			}
+
+			if responseVal != nil {
+				respBody, err := io.ReadAll(resp.Body)
+				if err != nil {
+					return fmt.Errorf("failed to read response body: %w", err)
+				}
+
+				if err := json.Unmarshal(respBody, responseVal); err != nil {
+					return fmt.Errorf("failed to unmarshal response: %w (body: %s)", err, string(respBody))
+				}
+			}
+
+			return nil
+		}
+
+		// HTTP 429: the server explicitly asked us to retry. Retry within the
+		// bounded policy; transport errors and 5xx responses are not retried.
+		if attempt >= defaultRetryMaxAttempts-1 {
+			respBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(respBody))
+		}
+
+		delay := c.retryDelay(resp.Header.Get("Retry-After"), attempt)
+		resp.Body.Close()
+
+		if err := c.sleep(ctx, delay); err != nil {
+			return err
 		}
 	}
-
-	return nil
 }
 
 // parseListResponse handles parsing API responses that might be either raw arrays or paginated envelopes.
