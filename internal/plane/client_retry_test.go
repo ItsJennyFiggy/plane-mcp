@@ -131,9 +131,9 @@ func TestRetry429DelaySecondsCappedAtMax(t *testing.T) {
 
 func TestRetry429FallbackBackoff(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		header     string
-		expected   []time.Duration
+		name     string
+		header   string
+		expected []time.Duration
 	}{
 		{"missing header", "", []time.Duration{defaultRetryBaseDelay, defaultRetryBaseDelay * 2}},
 		{"malformed header", "not-a-number", []time.Duration{defaultRetryBaseDelay, defaultRetryBaseDelay * 2}},
