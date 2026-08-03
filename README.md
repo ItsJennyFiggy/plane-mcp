@@ -164,6 +164,22 @@ Most configuration is supplied via environment variables; transport is also cont
 | — | `--host` | | `127.0.0.1` | Host/IP to bind the HTTP server to. Use `0.0.0.0` to allow connections from Docker containers via `host.docker.internal`. |
 | `MCP_CALLER_SECRET` | | ✅ (HTTP mode only) | — | Shared secret callers must present via `Authorization: Bearer <secret>` or `X-Caller-Secret` when running in HTTP mode. The server fails to start in HTTP mode if this is unset. Not used/required in stdio mode. |
 
+## Downstream rate-limit retries
+
+`plane-mcp` transparently recovers from bounded downstream Plane API HTTP `429 (Too Many Requests)` responses at the shared HTTP client boundary. When a Plane REST call returns `429`, the client retries within a fixed, zero-configuration policy before surfacing an error to the tool handler — so transient throttling by the Plane API does not become an LLM-visible failure or trigger repeated tool invocations.
+
+The policy is:
+
+- **Retries are limited to explicit `429` responses.** Transport errors and `5xx` responses are not retried — only a `429` tells the client to retry.
+- **Bounded budget.** A single call makes at most 4 total requests (the initial attempt plus up to 3 retries).
+- **`Retry-After` honored.** A valid `Retry-After` value — either delay-seconds (`120`) or an HTTP-date (`Wed, 21 Oct 2015 07:28:00 GMT`) — determines the next delay, capped at **5 seconds**.
+- **Fallback backoff.** If `Retry-After` is missing or malformed, the client uses bounded exponential backoff (starting at 200ms, doubling per attempt, capped at 5s) with jitter to avoid thundering-herd retries.
+- **Cancellation-aware.** Retry waits stop promptly when the request context is cancelled or reaches its deadline, and no further request is issued.
+- **Replay-safe.** Request method, URL, headers, query parameters, and JSON body are replayed identically on each retry, including for mutating methods. Each discarded `429` response body is closed before the next attempt.
+- **Budget exhaustion.** If all retries are exhausted, the original non-2xx error shape (including the final status and response body) is returned, so existing tool error behavior is unchanged.
+
+These defaults are fixed and not configurable. Rate limits imposed by an upstream MCP gateway *before* a request reaches this process happen outside this repository's control and cannot be retried here.
+
 ## Tool Scoping Profiles
 
 The active profile determines which tools are exposed to the agent. `planner` and `full` currently expose the same complete tool set; `worker` and `reviewer` are deliberately restricted.
