@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.16.0...v1.17.0) (2026-08-03)
+
+
+### Features
+
+* **plane:** retry downstream HTTP 429 rate limits transparently ([#80](https://github.com/ItsJennyFiggy/plane-mcp/issues/80)) ([3574baf](https://github.com/ItsJennyFiggy/plane-mcp/commit/3574baf18bd8d61ac454576c57765225323a696d))
+
 ## [1.16.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.15.0...v1.16.0) (2026-07-06)
 
 
