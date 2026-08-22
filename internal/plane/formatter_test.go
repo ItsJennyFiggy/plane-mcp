@@ -390,6 +390,34 @@ func TestFormatIntakeWorkItemsYAML(t *testing.T) {
 	}
 }
 
+func TestFormatIntakeWorkItemsYAMLStatusAndSnoozeMetadata(t *testing.T) {
+	// Arrange
+	snoozedTill := "2026-08-23T12:00:00Z"
+	items := []IntakeWorkItem{
+		{ID: "accepted", Status: IntakeStatusAccepted, Issue: Expandable[IntakeIssue]{Val: &IntakeIssue{ID: "issue-1", SequenceID: 1}}},
+		{ID: "declined", Status: IntakeStatusDeclined, Issue: Expandable[IntakeIssue]{Val: &IntakeIssue{ID: "issue-2", SequenceID: 2}}},
+		{ID: "snoozed", Status: IntakeStatusSnoozed, SnoozedTill: &snoozedTill, Issue: Expandable[IntakeIssue]{Val: &IntakeIssue{ID: "issue-3", SequenceID: 3}}},
+	}
+
+	// Act
+	got, err := FormatIntakeWorkItemsYAML(context.Background(), items)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("FormatIntakeWorkItemsYAML failed: %v", err)
+	}
+	var output []IntakeWorkItemOutput
+	if err := yaml.Unmarshal([]byte(got), &output); err != nil {
+		t.Fatalf("failed to unmarshal intake YAML: %v", err)
+	}
+	if len(output) != 3 || output[0].Status != "accepted" || output[1].Status != "declined" || output[2].Status != "snoozed" {
+		t.Fatalf("unexpected status output: %+v", output)
+	}
+	if output[2].SnoozedTill == nil || *output[2].SnoozedTill != snoozedTill {
+		t.Errorf("expected active snooze deadline %q, got %+v", snoozedTill, output[2].SnoozedTill)
+	}
+}
+
 func TestFormatWorkItemYAMLResilience(t *testing.T) {
 	cfg := &config.Config{
 		PlaneAPIKey:        "test-key",

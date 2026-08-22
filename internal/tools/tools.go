@@ -781,6 +781,41 @@ func annotateIntakeItem(ctx context.Context, item *plane.IntakeWorkItem, project
 	return nil
 }
 
+// annotateIntakeItems resolves all identifiers and uses one normal work-item
+// list to annotate visibility for the entire Intake queue.
+func annotateIntakeItems(ctx context.Context, items []plane.IntakeWorkItem, project *plane.Project, client planeClient) error {
+	needsVisibility := false
+	for i := range items {
+		issue := items[i].UnderlyingIssue()
+		if issue == nil {
+			continue
+		}
+		if issue.SequenceID > 0 && project.Identifier != "" {
+			items[i].ResolvedIdentifier = fmt.Sprintf("%s-%d", project.Identifier, issue.SequenceID)
+			needsVisibility = true
+		}
+	}
+	if !needsVisibility {
+		return nil
+	}
+
+	normalItems, err := client.ListWorkItems(ctx, project.ID, nil)
+	if err != nil {
+		return fmt.Errorf("failed to check normal work-item visibility for project %s: %w", project.Identifier, err)
+	}
+	visibleBySequence := make(map[int]bool, len(normalItems))
+	for _, item := range normalItems {
+		visibleBySequence[item.SequenceID] = true
+	}
+	for i := range items {
+		issue := items[i].UnderlyingIssue()
+		if issue != nil {
+			items[i].VisibleInWorkItems = visibleBySequence[issue.SequenceID]
+		}
+	}
+	return nil
+}
+
 // listIntakeWorkItems implements the list_intake_work_items tool logic.
 func listIntakeWorkItems(ctx context.Context, args ListIntakeWorkItemsArgs, client planeClient, resolver planeResolver, formatter planeFormatter) (*mcp.CallToolResult, error) {
 	project, err := resolver.ResolveProject(ctx, args.Project)
@@ -811,10 +846,8 @@ func listIntakeWorkItems(ctx context.Context, args ListIntakeWorkItemsArgs, clie
 		return toolText("[]"), nil
 	}
 
-	for i := range items {
-		if err := annotateIntakeItem(ctx, &items[i], project, client); err != nil {
-			return toolError(err.Error()), nil
-		}
+	if err := annotateIntakeItems(ctx, items, project, client); err != nil {
+		return toolError(err.Error()), nil
 	}
 
 	yamlOut, err := formatter.FormatIntakeWorkItemsYAML(ctx, items)

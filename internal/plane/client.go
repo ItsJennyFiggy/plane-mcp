@@ -550,10 +550,14 @@ func parseListResponse[T any](data []byte) ([]T, string, bool, error) {
 	return nil, "", false, fmt.Errorf("failed to parse response as list or paginated object (body: %s)", string(data))
 }
 
-// listAllGeneric handles auto-pagination for list endpoints
+const maxPaginationPages = 1000
+
+// listAllGeneric handles auto-pagination for list endpoints.
 func listAllGeneric[T any](ctx context.Context, c *Client, path string, queryParams map[string]string) ([]T, error) {
 	var allResults []T
 	cursor := ""
+	seenCursors := make(map[string]struct{})
+	pageCount := 0
 
 	// Parse limit from query params, then remove it so it's not forwarded.
 	limit := 0
@@ -565,6 +569,17 @@ func listAllGeneric[T any](ctx context.Context, c *Client, path string, queryPar
 	}
 
 	for {
+		if pageCount >= maxPaginationPages {
+			return nil, fmt.Errorf("pagination exceeded maximum page count of %d", maxPaginationPages)
+		}
+		pageCount++
+		if cursor != "" {
+			if _, seen := seenCursors[cursor]; seen {
+				return nil, fmt.Errorf("repeated pagination cursor %q", cursor)
+			}
+			seenCursors[cursor] = struct{}{}
+		}
+
 		params := make(map[string]string)
 		for k, v := range queryParams {
 			params[k] = v
@@ -596,6 +611,9 @@ func listAllGeneric[T any](ctx context.Context, c *Client, path string, queryPar
 
 		if !hasMore || nextCursor == "" {
 			break
+		}
+		if _, seen := seenCursors[nextCursor]; seen {
+			return nil, fmt.Errorf("repeated pagination cursor %q", nextCursor)
 		}
 		cursor = nextCursor
 	}
