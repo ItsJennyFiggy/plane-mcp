@@ -203,6 +203,8 @@ A `ping` tool is always registered (connection check), regardless of profile. Th
 |---|---|:---:|:---:|:---:|:---:|
 | `find_my_work` | List work items assigned to the current user, optionally filtered by project/state group. | ✅ | ✅ | ✅ | ✅ |
 | `get_work_item` | Retrieve a single work item by identifier (e.g. `PROJ-123`). | ✅ | ✅ | ✅ | ✅ |
+| `list_intake_work_items` | List a project's Intake queue with optional client-side status filtering and normal work-item visibility. | ✅ | ✅ | ✅ | ✅ |
+| `get_intake_work_item` | Retrieve an Intake record by its project-prefixed underlying work-item identifier (e.g. `ASBX-10`). | ✅ | ✅ | ✅ | ✅ |
 | `list_projects` | List all projects (identifier, name, id). | ✅ | ✅ | ✅ | ✅ |
 | `list_project_labels` | List all labels in a project. | ✅ | ✅ | ✅ | ✅ |
 | `list_modules` | List all modules in a project. | ✅ | ✅ | ✅ | ✅ |

@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Features
+
+* **tools:** add read-only Plane Intake discovery tools with identifier resolution, client-side status filtering, snooze/duplicate metadata, and normal work-item visibility (AGENT-180)
+
 ## [1.17.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.16.0...v1.17.0) (2026-08-03)
 
 

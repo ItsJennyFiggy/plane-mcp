@@ -327,6 +327,69 @@ func TestFormatWorkItemYAML(t *testing.T) {
 	})
 }
 
+func TestFormatIntakeWorkItemsYAML(t *testing.T) {
+	// Arrange
+	snoozedTill := "2026-08-21T12:00:00Z"
+	duplicateTo := "issue-target"
+	items := []IntakeWorkItem{
+		{
+			ID:                 "intake-pending",
+			Status:             IntakeStatusPending,
+			Source:             "IN_APP",
+			CreatedAt:          "2026-08-22T10:00:00Z",
+			ResolvedIdentifier: "ASBX-10",
+			Issue: Expandable[IntakeIssue]{Val: &IntakeIssue{
+				ID:              "issue-10",
+				Name:            "Incoming request",
+				DescriptionHTML: "<p>Rich <strong>description</strong></p>",
+				Priority:        "high",
+				SequenceID:      10,
+				State:           Expandable[State]{Val: &State{Name: "Triage"}},
+			}},
+			VisibleInWorkItems: false,
+		},
+		{
+			ID:                 "intake-duplicate",
+			Status:             IntakeStatusDuplicate,
+			SnoozedTill:        &snoozedTill,
+			DuplicateTo:        &duplicateTo,
+			Issue:              Expandable[IntakeIssue]{Val: &IntakeIssue{ID: "issue-11", Name: "Duplicate", SequenceID: 11}},
+			ResolvedIdentifier: "ASBX-11",
+			VisibleInWorkItems: true,
+		},
+	}
+
+	// Act
+	got, err := FormatIntakeWorkItemsYAML(context.Background(), items)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("FormatIntakeWorkItemsYAML failed: %v", err)
+	}
+	var output []IntakeWorkItemOutput
+	if err := yaml.Unmarshal([]byte(got), &output); err != nil {
+		t.Fatalf("failed to unmarshal intake YAML: %v", err)
+	}
+	if len(output) != 2 {
+		t.Fatalf("expected two intake outputs, got %d", len(output))
+	}
+	if output[0].IntakeID != "intake-pending" || output[0].IssueID != "issue-10" || output[0].Status != "pending" {
+		t.Errorf("unexpected pending output: %+v", output[0])
+	}
+	if output[0].Description != "Rich **description**" || output[0].State != "Triage" {
+		t.Errorf("expected formatted issue fields, got %+v", output[0])
+	}
+	if output[0].VisibleInWorkItems {
+		t.Error("pending intake item should not be marked visible")
+	}
+	if output[1].Status != "duplicate" || output[1].SnoozedTill == nil || *output[1].SnoozedTill != snoozedTill {
+		t.Errorf("expected duplicate/snooze metadata, got %+v", output[1])
+	}
+	if output[1].DuplicateTo == nil || *output[1].DuplicateTo != duplicateTo || !output[1].VisibleInWorkItems {
+		t.Errorf("expected duplicate target and visibility, got %+v", output[1])
+	}
+}
+
 func TestFormatWorkItemYAMLResilience(t *testing.T) {
 	cfg := &config.Config{
 		PlaneAPIKey:        "test-key",

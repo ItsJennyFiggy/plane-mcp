@@ -239,3 +239,88 @@ func FormatWorkItemsYAML(ctx context.Context, items []WorkItem, resolver *Resolv
 
 	return string(d), nil
 }
+
+// IntakeWorkItemOutput is the compact, identifier-first representation exposed
+// by the intake discovery tools.
+type IntakeWorkItemOutput struct {
+	IntakeID           string  `yaml:"intake_id"`
+	IssueID            string  `yaml:"issue_id"`
+	Identifier         string  `yaml:"identifier"`
+	Status             string  `yaml:"status"`
+	Name               string  `yaml:"name,omitempty"`
+	Description        any     `yaml:"description,omitempty"`
+	Priority           string  `yaml:"priority,omitempty"`
+	SequenceID         int     `yaml:"sequence_id,omitempty"`
+	State              string  `yaml:"state,omitempty"`
+	SnoozedTill        *string `yaml:"snoozed_till,omitempty"`
+	DuplicateTo        *string `yaml:"duplicate_to,omitempty"`
+	VisibleInWorkItems bool    `yaml:"visible_in_work_items"`
+	Source             string  `yaml:"source,omitempty"`
+	CreatedAt          string  `yaml:"created_at,omitempty"`
+	UpdatedAt          string  `yaml:"updated_at,omitempty"`
+}
+
+func intakeIssueDescription(issue *IntakeIssue) any {
+	if issue == nil {
+		return nil
+	}
+	if issue.DescriptionHTML != "" {
+		return ConvertHTMLToMarkdown(issue.DescriptionHTML)
+	}
+	if issue.DescriptionStripped != "" {
+		return issue.DescriptionStripped
+	}
+	return issue.Description
+}
+
+func intakeIssueState(issue *IntakeIssue) string {
+	if issue == nil {
+		return ""
+	}
+	if issue.State.Val != nil {
+		return issue.State.Val.Name
+	}
+	return issue.State.ID
+}
+
+func buildIntakeWorkItemOutput(item IntakeWorkItem) IntakeWorkItemOutput {
+	issue := item.UnderlyingIssue()
+	output := IntakeWorkItemOutput{
+		IntakeID:           item.ID,
+		IssueID:            item.UnderlyingIssueID(),
+		Identifier:         item.ResolvedIdentifier,
+		Status:             IntakeStatusName(item.Status),
+		SnoozedTill:        item.SnoozedTill,
+		DuplicateTo:        item.DuplicateTo,
+		VisibleInWorkItems: item.VisibleInWorkItems,
+		Source:             item.Source,
+		CreatedAt:          item.CreatedAt,
+		UpdatedAt:          item.UpdatedAt,
+	}
+	if issue == nil {
+		return output
+	}
+	output.Name = issue.Name
+	output.Description = intakeIssueDescription(issue)
+	output.Priority = issue.Priority
+	output.SequenceID = issue.SequenceID
+	output.State = intakeIssueState(issue)
+	if output.Identifier == "" && issue.Project.Val != nil && issue.SequenceID > 0 {
+		output.Identifier = fmt.Sprintf("%s-%d", issue.Project.Val.Identifier, issue.SequenceID)
+	}
+	return output
+}
+
+// FormatIntakeWorkItemsYAML serializes intake records into a compact YAML list.
+func FormatIntakeWorkItemsYAML(_ context.Context, items []IntakeWorkItem) (string, error) {
+	output := make([]IntakeWorkItemOutput, 0, len(items))
+	for _, item := range items {
+		output = append(output, buildIntakeWorkItemOutput(item))
+	}
+
+	d, err := yaml.Marshal(output)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal intake work items to yaml: %w", err)
+	}
+	return string(d), nil
+}

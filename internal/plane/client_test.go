@@ -450,6 +450,122 @@ func TestClientListWorkItems(t *testing.T) {
 	})
 }
 
+func TestClientListIntakeWorkItemsUsesExpandedIssueData(t *testing.T) {
+	// Arrange
+	cfg := &config.Config{
+		PlaneAPIKey:        "test-key",
+		PlaneBaseURL:       "https://plane.example.com",
+		PlaneWorkspaceSlug: "test-workspace",
+	}
+	client := NewClient(cfg)
+	client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/v1/workspaces/test-workspace/projects/project-1/intake-issues/" {
+			t.Errorf("unexpected intake list path: %s", req.URL.Path)
+		}
+		if req.URL.Query().Get("expand") != "issue" {
+			t.Errorf("expected expand=issue, got %q", req.URL.Query().Get("expand"))
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(`{
+				"results": [{
+					"id": "intake-1",
+					"issue": {
+						"id": "issue-1",
+						"name": "Incoming request",
+						"sequence_id": 10,
+						"priority": "high"
+					},
+					"status": -2,
+					"snoozed_till": null,
+					"duplicate_to": null
+				}],
+				"next_cursor": "",
+				"next_page_results": false
+			}`)),
+		}, nil
+	})
+
+	// Act
+	items, err := client.ListIntakeWorkItems(context.Background(), "project-1")
+
+	// Assert
+	if err != nil {
+		t.Fatalf("ListIntakeWorkItems failed: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one intake item, got %d", len(items))
+	}
+	issue := items[0].UnderlyingIssue()
+	if issue == nil || issue.ID != "issue-1" || issue.SequenceID != 10 {
+		t.Fatalf("unexpected expanded issue: %+v", issue)
+	}
+	if items[0].Status != -2 {
+		t.Errorf("expected pending status -2, got %d", items[0].Status)
+	}
+}
+
+func TestClientGetIntakeWorkItemUsesUnderlyingIssueID(t *testing.T) {
+	// Arrange
+	cfg := &config.Config{
+		PlaneAPIKey:        "test-key",
+		PlaneBaseURL:       "https://plane.example.com",
+		PlaneWorkspaceSlug: "test-workspace",
+	}
+	client := NewClient(cfg)
+	client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+		expectedPath := "/api/v1/workspaces/test-workspace/projects/project-1/intake-issues/issue-1/"
+		if req.URL.Path != expectedPath {
+			t.Errorf("expected path %q, got %q", expectedPath, req.URL.Path)
+		}
+		if req.URL.Query().Get("expand") != "issue" {
+			t.Errorf("expected expand=issue, got %q", req.URL.Query().Get("expand"))
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(`{
+				"id": "intake-1",
+				"issue": {"id": "issue-1", "name": "Incoming request", "sequence_id": 10},
+				"status": 1
+			}`)),
+		}, nil
+	})
+
+	// Act
+	item, err := client.GetIntakeWorkItem(context.Background(), "project-1", "issue-1")
+
+	// Assert
+	if err != nil {
+		t.Fatalf("GetIntakeWorkItem failed: %v", err)
+	}
+	if item.ID != "intake-1" || item.UnderlyingIssue().ID != "issue-1" {
+		t.Fatalf("unexpected intake item: %+v", item)
+	}
+}
+
+func TestIntakeWorkItemUsesIssueDetailWhenIssueIsOnlyAnID(t *testing.T) {
+	// Arrange
+	var item IntakeWorkItem
+	err := json.Unmarshal([]byte(`{
+		"id": "intake-1",
+		"issue": "issue-1",
+		"issue_detail": {"id": "issue-1", "name": "Expanded request", "sequence_id": 10},
+		"status": -1
+	}`), &item)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("failed to decode intake item: %v", err)
+	}
+	issue := item.UnderlyingIssue()
+	if issue == nil || issue.Name != "Expanded request" || issue.SequenceID != 10 {
+		t.Fatalf("expected issue_detail fallback, got %+v", issue)
+	}
+	if item.UnderlyingIssueID() != "issue-1" || IntakeStatusName(item.Status) != "declined" {
+		t.Errorf("unexpected intake metadata: issue=%q status=%q", item.UnderlyingIssueID(), IntakeStatusName(item.Status))
+	}
+}
+
 func TestClientCreateWorkItem(t *testing.T) {
 	cfg := &config.Config{
 		PlaneAPIKey:        "test-key",
