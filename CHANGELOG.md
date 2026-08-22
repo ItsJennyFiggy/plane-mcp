@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.18.0](https://github.com/ItsJennyFiggy/plane-mcp/compare/v1.17.0...v1.18.0) (2026-08-22)
+
+
+### Features
+
+* **tools:** add Intake idea submission and verified enrichment (AGENT-179) ([#85](https://github.com/ItsJennyFiggy/plane-mcp/issues/85)) ([6c62a7d](https://github.com/ItsJennyFiggy/plane-mcp/commit/6c62a7ded65e0f681afbdbdb1450375b59eeb1c7))
+* **tools:** add Plane Intake discovery tools ([#82](https://github.com/ItsJennyFiggy/plane-mcp/issues/82)) ([860d44a](https://github.com/ItsJennyFiggy/plane-mcp/commit/860d44a68b0e5580e416a72a150e9552dc4bf049))
+* **tools:** add verified Plane Intake triage actions ([#84](https://github.com/ItsJennyFiggy/plane-mcp/issues/84)) ([323990d](https://github.com/ItsJennyFiggy/plane-mcp/commit/323990d02b11df3916355b717e4f7584b7423e05))
+
 ## [Unreleased]
 
 ### Features
