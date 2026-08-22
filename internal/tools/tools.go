@@ -31,6 +31,8 @@ import (
 type planeClient interface {
 	ListProjects(ctx context.Context) ([]plane.Project, error)
 	GetWorkItemByIdentifier(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error)
+	ListIntakeWorkItems(ctx context.Context, projectID string) ([]plane.IntakeWorkItem, error)
+	GetIntakeWorkItem(ctx context.Context, projectID, issueID string) (*plane.IntakeWorkItem, error)
 	ListWorkItems(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error)
 	SearchWorkItems(ctx context.Context, params map[string]string) ([]plane.SearchWorkItemResult, error)
 	CreateWorkItem(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error)
@@ -67,6 +69,7 @@ type planeResolver interface {
 type planeFormatter interface {
 	FormatWorkItemYAML(ctx context.Context, item *plane.WorkItem, detail string) (string, error)
 	FormatWorkItemsYAML(ctx context.Context, items []plane.WorkItem, detail string) (string, error)
+	FormatIntakeWorkItemsYAML(ctx context.Context, items []plane.IntakeWorkItem) (string, error)
 }
 
 // resolverFormatter wraps a *plane.Resolver and delegates to the plane package formatters.
@@ -80,6 +83,10 @@ func (f *resolverFormatter) FormatWorkItemYAML(ctx context.Context, item *plane.
 
 func (f *resolverFormatter) FormatWorkItemsYAML(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
 	return plane.FormatWorkItemsYAML(ctx, items, f.resolver, detail)
+}
+
+func (f *resolverFormatter) FormatIntakeWorkItemsYAML(ctx context.Context, items []plane.IntakeWorkItem) (string, error) {
+	return plane.FormatIntakeWorkItemsYAML(ctx, items)
 }
 
 // ---------------------------------------------------------------------------
@@ -360,6 +367,17 @@ type FindMyWorkArgs struct {
 type GetWorkItemArgs struct {
 	Identifier string `json:"identifier"`
 	Detail     string `json:"detail"`
+}
+
+// ListIntakeWorkItemsArgs are the arguments for the list_intake_work_items tool.
+type ListIntakeWorkItemsArgs struct {
+	Project string  `json:"project"`
+	Status  *string `json:"status,omitempty"`
+}
+
+// GetIntakeWorkItemArgs are the arguments for the get_intake_work_item tool.
+type GetIntakeWorkItemArgs struct {
+	Identifier string `json:"identifier"`
 }
 
 // ReportProgressArgs are the arguments for the report_progress tool.
@@ -726,6 +744,186 @@ func getWorkItem(ctx context.Context, args GetWorkItemArgs, client planeClient, 
 	}
 
 	return toolText(yaml), nil
+}
+
+// parseIntakeStatusFilter validates the user-facing status filter while keeping
+// the status comparison in the handler because Plane ignores ?status= on the
+// intake list endpoint.
+func parseIntakeStatusFilter(input string) (int, error) {
+	return plane.ParseIntakeStatus(input)
+}
+
+// isNotFoundError also recognizes errors from test doubles and older clients
+// that have not yet wrapped HTTP responses in plane.APIError.
+func isNotFoundError(err error) bool {
+	return plane.IsNotFoundError(err) || strings.Contains(strings.ToLower(err.Error()), "status 404")
+}
+
+// annotateIntakeItem resolves the identifier and probes the normal work-item
+// endpoint so callers can distinguish accepted/visible records from records
+// that remain intake-only. A 404 is an expected visibility result.
+func annotateIntakeItem(ctx context.Context, item *plane.IntakeWorkItem, project *plane.Project, client planeClient) error {
+	issue := item.UnderlyingIssue()
+	if issue == nil {
+		return nil
+	}
+	if issue.SequenceID > 0 && project.Identifier != "" {
+		item.ResolvedIdentifier = fmt.Sprintf("%s-%d", project.Identifier, issue.SequenceID)
+		normalItem, err := client.GetWorkItemByIdentifier(ctx, project.Identifier, issue.SequenceID)
+		if err != nil {
+			if isNotFoundError(err) {
+				return nil
+			}
+			return fmt.Errorf("failed to check normal work-item visibility for %s: %w", item.ResolvedIdentifier, err)
+		}
+		item.VisibleInWorkItems = normalItem != nil
+	}
+	return nil
+}
+
+// annotateIntakeItems resolves all identifiers and uses one normal work-item
+// list to annotate visibility for the entire Intake queue.
+func annotateIntakeItems(ctx context.Context, items []plane.IntakeWorkItem, project *plane.Project, client planeClient) error {
+	needsVisibility := false
+	for i := range items {
+		issue := items[i].UnderlyingIssue()
+		if issue == nil {
+			continue
+		}
+		if issue.SequenceID > 0 && project.Identifier != "" {
+			items[i].ResolvedIdentifier = fmt.Sprintf("%s-%d", project.Identifier, issue.SequenceID)
+			needsVisibility = true
+		}
+	}
+	if !needsVisibility {
+		return nil
+	}
+
+	normalItems, err := client.ListWorkItems(ctx, project.ID, nil)
+	if err != nil {
+		return fmt.Errorf("failed to check normal work-item visibility for project %s: %w", project.Identifier, err)
+	}
+	visibleBySequence := make(map[int]bool, len(normalItems))
+	for _, item := range normalItems {
+		visibleBySequence[item.SequenceID] = true
+	}
+	for i := range items {
+		issue := items[i].UnderlyingIssue()
+		if issue != nil {
+			items[i].VisibleInWorkItems = visibleBySequence[issue.SequenceID]
+		}
+	}
+	return nil
+}
+
+// listIntakeWorkItems implements the list_intake_work_items tool logic.
+func listIntakeWorkItems(ctx context.Context, args ListIntakeWorkItemsArgs, client planeClient, resolver planeResolver, formatter planeFormatter) (*mcp.CallToolResult, error) {
+	project, err := resolver.ResolveProject(ctx, args.Project)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to resolve project %q: %v", args.Project, err)), nil
+	}
+
+	items, err := client.ListIntakeWorkItems(ctx, project.ID)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to list intake work items: %v", err)), nil
+	}
+
+	if args.Status != nil && strings.TrimSpace(*args.Status) != "" {
+		status, err := parseIntakeStatusFilter(*args.Status)
+		if err != nil {
+			return toolError(err.Error()), nil
+		}
+		filtered := items[:0]
+		for _, item := range items {
+			if item.Status == status {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
+	}
+
+	if len(items) == 0 {
+		return toolText("[]"), nil
+	}
+
+	if err := annotateIntakeItems(ctx, items, project, client); err != nil {
+		return toolError(err.Error()), nil
+	}
+
+	yamlOut, err := formatter.FormatIntakeWorkItemsYAML(ctx, items)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to format intake work items: %v", err)), nil
+	}
+	return toolText(yamlOut), nil
+}
+
+// getIntakeWorkItem implements identifier-based intake lookup. The list route
+// resolves the sequence identifier to the underlying issue UUID; the detail
+// route is then called with that UUID as required by Plane.
+func getIntakeWorkItem(ctx context.Context, args GetIntakeWorkItemArgs, client planeClient, resolver planeResolver, formatter planeFormatter) (*mcp.CallToolResult, error) {
+	projectIdentifier, sequenceID, err := parseIdentifier(args.Identifier)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+
+	project, err := resolver.ResolveProject(ctx, projectIdentifier)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to resolve project %q: %v", projectIdentifier, err)), nil
+	}
+
+	items, err := client.ListIntakeWorkItems(ctx, project.ID)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to list intake work items for %s: %v", args.Identifier, err)), nil
+	}
+
+	var matched *plane.IntakeWorkItem
+	for i := range items {
+		issue := items[i].UnderlyingIssue()
+		if issue != nil && issue.SequenceID == sequenceID {
+			matched = &items[i]
+			break
+		}
+	}
+	if matched == nil {
+		return toolError(fmt.Sprintf(
+			"intake work item %s was not found in the active intake queue; Plane omits expired snoozed records from intake list responses",
+			args.Identifier,
+		)), nil
+	}
+
+	issueID := matched.UnderlyingIssueID()
+	if issueID == "" {
+		return toolError(fmt.Sprintf("intake work item %s has no underlying issue UUID in the Plane response", args.Identifier)), nil
+	}
+
+	detail, err := client.GetIntakeWorkItem(ctx, project.ID, issueID)
+	if err != nil {
+		if isNotFoundError(err) {
+			return toolError(fmt.Sprintf(
+				"failed to get intake work item %s by underlying issue UUID %s: Plane returned 404; the record may be an expired snoozed item or no longer be visible",
+				args.Identifier, issueID,
+			)), nil
+		}
+		return toolError(fmt.Sprintf("failed to get intake work item %s: %v", args.Identifier, err)), nil
+	}
+	if detail == nil {
+		return toolError(fmt.Sprintf("failed to get intake work item %s: Plane returned an empty response", args.Identifier)), nil
+	}
+	detail.ResolvedIdentifier = args.Identifier
+	if detail.UnderlyingIssue() == nil {
+		detail.Issue = matched.Issue
+		detail.IssueDetail = matched.IssueDetail
+	}
+	if err := annotateIntakeItem(ctx, detail, project, client); err != nil {
+		return toolError(err.Error()), nil
+	}
+	detail.ResolvedIdentifier = args.Identifier
+
+	yamlOut, err := formatter.FormatIntakeWorkItemsYAML(ctx, []plane.IntakeWorkItem{*detail})
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to format intake work item: %v", err)), nil
+	}
+	return toolText(yamlOut), nil
 }
 
 // listComments implements the list_comments tool logic.
@@ -2377,8 +2575,28 @@ func getWorkItemInputSchema() *jsonschema.Schema {
 	return schema
 }
 
+func listIntakeWorkItemsInputSchema() *jsonschema.Schema {
+	schema, err := jsonschema.For[ListIntakeWorkItemsArgs](nil)
+	if err != nil {
+		panic(fmt.Sprintf("list_intake_work_items: failed to build input schema: %v", err))
+	}
+	if status, ok := schema.Properties["status"]; ok {
+		status.Enum = []any{"pending", "declined", "snoozed", "accepted", "duplicate", "-2", "-1", "0", "1", "2"}
+		status.Description = "Optional client-side filter. Plane status names are pending, declined, snoozed, accepted, and duplicate."
+	}
+	return schema
+}
+
+func getIntakeWorkItemInputSchema() *jsonschema.Schema {
+	schema, err := jsonschema.For[GetIntakeWorkItemArgs](nil)
+	if err != nil {
+		panic(fmt.Sprintf("get_intake_work_item: failed to build input schema: %v", err))
+	}
+	return schema
+}
+
 // ---------------------------------------------------------------------------
-// Register — wires up all five tools to the MCP server
+// Register — wires up all tools to the MCP server
 // ---------------------------------------------------------------------------
 
 // registerWithDeps is the testable core of Register that accepts interface types.
@@ -2538,6 +2756,30 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args GetWorkItemArgs) (*mcp.CallToolResult, any, error) {
 			result, err := getWorkItem(ctx, args, client, formatter)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("list_intake_work_items", workerPlannerFullReviewer, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "list_intake_work_items",
+			Description: "List a project's Plane Intake queue with optional client-side status filtering. Returns Intake UUIDs, underlying work-item identifiers, canonical statuses, snooze/duplicate metadata, issue fields, and normal work-item visibility.",
+			InputSchema: listIntakeWorkItemsInputSchema(),
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args ListIntakeWorkItemsArgs) (*mcp.CallToolResult, any, error) {
+			result, err := listIntakeWorkItems(ctx, args, client, resolver, formatter)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("get_intake_work_item", workerPlannerFullReviewer, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "get_intake_work_item",
+			Description: "Retrieve a Plane Intake record by its project-prefixed underlying work-item identifier (e.g. ASBX-10).",
+			InputSchema: getIntakeWorkItemInputSchema(),
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args GetIntakeWorkItemArgs) (*mcp.CallToolResult, any, error) {
+			result, err := getIntakeWorkItem(ctx, args, client, resolver, formatter)
 			return result, nil, err
 		})
 	}

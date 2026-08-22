@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -165,6 +166,151 @@ type WorkItem struct {
 	Type                *string              `json:"type,omitempty"`
 	Assignees           []Expandable[Member] `json:"assignees"`
 	Labels              []Expandable[Label]  `json:"labels"`
+}
+
+// IntakeIssue is the expanded work item embedded in an IntakeWorkItem.
+// Plane's intake serializer exposes more fields than the discovery tools need;
+// the commonly useful fields are modeled here while preserving flexible
+// description data from the API.
+type IntakeIssue struct {
+	ID                  string               `json:"id"`
+	Name                string               `json:"name"`
+	Description         any                  `json:"description,omitempty"`
+	DescriptionHTML     string               `json:"description_html,omitempty"`
+	DescriptionStripped string               `json:"description_stripped,omitempty"`
+	Priority            string               `json:"priority,omitempty"`
+	StartDate           string               `json:"start_date,omitempty"`
+	TargetDate          string               `json:"target_date,omitempty"`
+	SequenceID          int                  `json:"sequence_id"`
+	CompletedAt         string               `json:"completed_at,omitempty"`
+	ArchivedAt          string               `json:"archived_at,omitempty"`
+	Project             Expandable[Project]  `json:"project"`
+	State               Expandable[State]    `json:"state"`
+	Assignees           []Expandable[Member] `json:"assignees,omitempty"`
+	Labels              []Expandable[Label]  `json:"labels,omitempty"`
+}
+
+// IntakeWorkItem is a Plane intake queue record. The API's issue field is an
+// underlying work-item UUID unless expand=issue is requested; issue_detail is
+// also returned by recent Plane versions with the issue expanded.
+type IntakeWorkItem struct {
+	ID             string                  `json:"id"`
+	Issue          Expandable[IntakeIssue] `json:"issue"`
+	IssueDetail    *IntakeIssue            `json:"issue_detail,omitempty"`
+	Inbox          string                  `json:"inbox,omitempty"`
+	CreatedAt      string                  `json:"created_at,omitempty"`
+	UpdatedAt      string                  `json:"updated_at,omitempty"`
+	DeletedAt      string                  `json:"deleted_at,omitempty"`
+	Status         int                     `json:"status"`
+	SnoozedTill    *string                 `json:"snoozed_till,omitempty"`
+	Source         string                  `json:"source,omitempty"`
+	SourceEmail    string                  `json:"source_email,omitempty"`
+	ExternalSource string                  `json:"external_source,omitempty"`
+	ExternalID     string                  `json:"external_id,omitempty"`
+	Extra          any                     `json:"extra,omitempty"`
+	CreatedBy      string                  `json:"created_by,omitempty"`
+	UpdatedBy      string                  `json:"updated_by,omitempty"`
+	Project        Expandable[Project]     `json:"project"`
+	Workspace      string                  `json:"workspace,omitempty"`
+	Intake         string                  `json:"intake,omitempty"`
+	DuplicateTo    *string                 `json:"duplicate_to,omitempty"`
+
+	// ResolvedIdentifier and VisibleInWorkItems are populated by the tool
+	// handler and are intentionally not part of the API model.
+	ResolvedIdentifier string `json:"-"`
+	VisibleInWorkItems bool   `json:"-"`
+}
+
+// UnderlyingIssue returns the expanded issue, preferring the explicit
+// issue_detail field when the server supplied it.
+func (i *IntakeWorkItem) UnderlyingIssue() *IntakeIssue {
+	if i == nil {
+		return nil
+	}
+	if i.IssueDetail != nil {
+		return i.IssueDetail
+	}
+	return i.Issue.Val
+}
+
+// UnderlyingIssueID returns the UUID used by the intake detail route.
+func (i *IntakeWorkItem) UnderlyingIssueID() string {
+	if i == nil {
+		return ""
+	}
+	if i.Issue.ID != "" {
+		return i.Issue.ID
+	}
+	if issue := i.UnderlyingIssue(); issue != nil {
+		return issue.ID
+	}
+	return ""
+}
+
+const (
+	IntakeStatusPending   = -2
+	IntakeStatusDeclined  = -1
+	IntakeStatusSnoozed   = 0
+	IntakeStatusAccepted  = 1
+	IntakeStatusDuplicate = 2
+)
+
+// IntakeStatusName returns the stable, human-readable status name used by the
+// MCP discovery tools.
+func IntakeStatusName(status int) string {
+	switch status {
+	case IntakeStatusPending:
+		return "pending"
+	case IntakeStatusDeclined:
+		return "declined"
+	case IntakeStatusSnoozed:
+		return "snoozed"
+	case IntakeStatusAccepted:
+		return "accepted"
+	case IntakeStatusDuplicate:
+		return "duplicate"
+	default:
+		return fmt.Sprintf("unknown(%d)", status)
+	}
+}
+
+// ParseIntakeStatus accepts either a canonical status name or its Plane
+// integer value for client-side status filtering.
+func ParseIntakeStatus(input string) (int, error) {
+	input = strings.ToLower(strings.TrimSpace(input))
+	switch input {
+	case "pending":
+		return IntakeStatusPending, nil
+	case "declined", "rejected":
+		return IntakeStatusDeclined, nil
+	case "snoozed":
+		return IntakeStatusSnoozed, nil
+	case "accepted":
+		return IntakeStatusAccepted, nil
+	case "duplicate":
+		return IntakeStatusDuplicate, nil
+	}
+	status, err := strconv.Atoi(input)
+	if err == nil && status >= IntakeStatusPending && status <= IntakeStatusDuplicate {
+		return status, nil
+	}
+	return 0, fmt.Errorf("invalid intake status %q: use pending, declined, snoozed, accepted, duplicate, or a Plane status value from -2 to 2", input)
+}
+
+// APIError represents a non-successful Plane API response.
+type APIError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("request failed with status %d: %s", e.StatusCode, e.Body)
+}
+
+// IsNotFoundError reports whether err represents an HTTP 404 response.
+func IsNotFoundError(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
 }
 
 // CommentActorDetail represents the actor (user) that authored a comment.
@@ -349,7 +495,7 @@ func (c *Client) request(ctx context.Context, method, path string, queryParams m
 
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 				respBody, _ := io.ReadAll(resp.Body)
-				return fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(respBody))
+				return &APIError{StatusCode: resp.StatusCode, Body: string(respBody)}
 			}
 
 			if responseVal != nil {
@@ -371,7 +517,7 @@ func (c *Client) request(ctx context.Context, method, path string, queryParams m
 		if attempt >= defaultRetryMaxAttempts-1 {
 			respBody, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			return fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(respBody))
+			return &APIError{StatusCode: resp.StatusCode, Body: string(respBody)}
 		}
 
 		delay := c.retryDelay(resp.Header.Get("Retry-After"), attempt)
@@ -404,10 +550,14 @@ func parseListResponse[T any](data []byte) ([]T, string, bool, error) {
 	return nil, "", false, fmt.Errorf("failed to parse response as list or paginated object (body: %s)", string(data))
 }
 
-// listAllGeneric handles auto-pagination for list endpoints
+const maxPaginationPages = 1000
+
+// listAllGeneric handles auto-pagination for list endpoints.
 func listAllGeneric[T any](ctx context.Context, c *Client, path string, queryParams map[string]string) ([]T, error) {
 	var allResults []T
 	cursor := ""
+	seenCursors := make(map[string]struct{})
+	pageCount := 0
 
 	// Parse limit from query params, then remove it so it's not forwarded.
 	limit := 0
@@ -419,6 +569,17 @@ func listAllGeneric[T any](ctx context.Context, c *Client, path string, queryPar
 	}
 
 	for {
+		if pageCount >= maxPaginationPages {
+			return nil, fmt.Errorf("pagination exceeded maximum page count of %d", maxPaginationPages)
+		}
+		pageCount++
+		if cursor != "" {
+			if _, seen := seenCursors[cursor]; seen {
+				return nil, fmt.Errorf("repeated pagination cursor %q", cursor)
+			}
+			seenCursors[cursor] = struct{}{}
+		}
+
 		params := make(map[string]string)
 		for k, v := range queryParams {
 			params[k] = v
@@ -450,6 +611,9 @@ func listAllGeneric[T any](ctx context.Context, c *Client, path string, queryPar
 
 		if !hasMore || nextCursor == "" {
 			break
+		}
+		if _, seen := seenCursors[nextCursor]; seen {
+			return nil, fmt.Errorf("repeated pagination cursor %q", nextCursor)
 		}
 		cursor = nextCursor
 	}
@@ -516,6 +680,27 @@ func (c *Client) GetMe(ctx context.Context) (*Member, error) {
 func (c *Client) ListWorkItems(ctx context.Context, projectID string, params map[string]string) ([]WorkItem, error) {
 	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/work-items/", c.WorkspaceSlug, projectID)
 	return listAllGeneric[WorkItem](ctx, c, path, params)
+}
+
+// ListIntakeWorkItems retrieves all visible intake records for a project with
+// the underlying work item expanded. Plane currently ignores the status query
+// parameter on this endpoint, so status filtering belongs to the caller.
+// Path: GET /api/v1/workspaces/{slug}/projects/{projectID}/intake-issues/
+func (c *Client) ListIntakeWorkItems(ctx context.Context, projectID string) ([]IntakeWorkItem, error) {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/intake-issues/", c.WorkspaceSlug, projectID)
+	return listAllGeneric[IntakeWorkItem](ctx, c, path, map[string]string{"expand": "issue"})
+}
+
+// GetIntakeWorkItem retrieves an intake record by the underlying work item
+// UUID, not by the IntakeIssue record UUID.
+// Path: GET /api/v1/workspaces/{slug}/projects/{projectID}/intake-issues/{issueID}/
+func (c *Client) GetIntakeWorkItem(ctx context.Context, projectID, issueID string) (*IntakeWorkItem, error) {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/intake-issues/%s/", c.WorkspaceSlug, projectID, issueID)
+	var item IntakeWorkItem
+	if err := c.request(ctx, "GET", path, map[string]string{"expand": "issue"}, nil, &item); err != nil {
+		return nil, err
+	}
+	return &item, nil
 }
 
 // SearchWorkItems searches work items across the workspace.

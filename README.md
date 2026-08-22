@@ -203,6 +203,8 @@ A `ping` tool is always registered (connection check), regardless of profile. Th
 |---|---|:---:|:---:|:---:|:---:|
 | `find_my_work` | List work items assigned to the current user, optionally filtered by project/state group. | ✅ | ✅ | ✅ | ✅ |
 | `get_work_item` | Retrieve a single work item by identifier (e.g. `PROJ-123`). | ✅ | ✅ | ✅ | ✅ |
+| `list_intake_work_items` | List a project's Intake queue with optional client-side status filtering and normal work-item visibility. | ✅ | ✅ | ✅ | ✅ |
+| `get_intake_work_item` | Retrieve an Intake record by its project-prefixed underlying work-item identifier (e.g. `ASBX-10`). | ✅ | ✅ | ✅ | ✅ |
 | `list_projects` | List all projects (identifier, name, id). | ✅ | ✅ | ✅ | ✅ |
 | `list_project_labels` | List all labels in a project. | ✅ | ✅ | ✅ | ✅ |
 | `list_modules` | List all modules in a project. | ✅ | ✅ | ✅ | ✅ |
@@ -213,6 +215,12 @@ A `ping` tool is always registered (connection check), regardless of profile. Th
 | `get_last_comment` | Get the most recently created comment on a work item. | | ✅ | ✅ | ✅ |
 | `list_relations` | List all relations for a work item, grouped by type. | | | ✅ | ✅ |
 | `list_children` | List a work item's child sub-issues. | | | ✅ | ✅ |
+
+Intake discovery details:
+
+* `list_intake_work_items` accepts the canonical statuses `pending`, `declined`, `snoozed`, `accepted`, and `duplicate`, or Plane's numeric values `-2` through `2`. Filtering is client-side because Plane ignores the Intake endpoint's `status` query parameter.
+* Intake list visibility is annotated with one additional normal-work-item list request per project. Records absent from that response are returned with `visible_in_work_items: false`; a non-404 visibility API failure fails the tool response rather than returning an ambiguous result.
+* `get_intake_work_item` resolves the project-prefixed identifier through the Intake list and then uses the underlying issue UUID for the detail route. A missing active-queue record or detail `404` includes guidance that an expired snooze or visibility change may be responsible.
 
 ### Progress & comments
 

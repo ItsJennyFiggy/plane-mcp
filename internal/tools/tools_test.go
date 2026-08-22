@@ -551,6 +551,8 @@ func intPtr(n int) *int       { return &n }
 type mockClient struct {
 	listProjectsFn            func(ctx context.Context) ([]plane.Project, error)
 	getWorkItemByIdentifierFn func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error)
+	listIntakeWorkItemsFn     func(ctx context.Context, projectID string) ([]plane.IntakeWorkItem, error)
+	getIntakeWorkItemFn       func(ctx context.Context, projectID, issueID string) (*plane.IntakeWorkItem, error)
 	listWorkItemsFn           func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error)
 	searchWorkItemsFn         func(ctx context.Context, params map[string]string) ([]plane.SearchWorkItemResult, error)
 	createWorkItemFn          func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error)
@@ -577,6 +579,12 @@ func (m *mockClient) ListProjects(ctx context.Context) ([]plane.Project, error) 
 }
 func (m *mockClient) GetWorkItemByIdentifier(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
 	return m.getWorkItemByIdentifierFn(ctx, projectIdentifier, sequenceID)
+}
+func (m *mockClient) ListIntakeWorkItems(ctx context.Context, projectID string) ([]plane.IntakeWorkItem, error) {
+	return m.listIntakeWorkItemsFn(ctx, projectID)
+}
+func (m *mockClient) GetIntakeWorkItem(ctx context.Context, projectID, issueID string) (*plane.IntakeWorkItem, error) {
+	return m.getIntakeWorkItemFn(ctx, projectID, issueID)
 }
 func (m *mockClient) ListWorkItems(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
 	return m.listWorkItemsFn(ctx, projectID, params)
@@ -674,8 +682,9 @@ func (m *mockResolver) ResolveMember(ctx context.Context, input string) (*plane.
 
 // mockFormatter is a test double for planeFormatter.
 type mockFormatter struct {
-	formatWorkItemYAMLFn  func(ctx context.Context, item *plane.WorkItem, detail string) (string, error)
-	formatWorkItemsYAMLFn func(ctx context.Context, items []plane.WorkItem, detail string) (string, error)
+	formatWorkItemYAMLFn        func(ctx context.Context, item *plane.WorkItem, detail string) (string, error)
+	formatWorkItemsYAMLFn       func(ctx context.Context, items []plane.WorkItem, detail string) (string, error)
+	formatIntakeWorkItemsYAMLFn func(ctx context.Context, items []plane.IntakeWorkItem) (string, error)
 }
 
 func (m *mockFormatter) FormatWorkItemYAML(ctx context.Context, item *plane.WorkItem, detail string) (string, error) {
@@ -683,6 +692,9 @@ func (m *mockFormatter) FormatWorkItemYAML(ctx context.Context, item *plane.Work
 }
 func (m *mockFormatter) FormatWorkItemsYAML(ctx context.Context, items []plane.WorkItem, detail string) (string, error) {
 	return m.formatWorkItemsYAMLFn(ctx, items, detail)
+}
+func (m *mockFormatter) FormatIntakeWorkItemsYAML(ctx context.Context, items []plane.IntakeWorkItem) (string, error) {
+	return m.formatIntakeWorkItemsYAMLFn(ctx, items)
 }
 
 // ---------------------------------------------------------------------------
@@ -2109,7 +2121,7 @@ func TestRegisterWithDeps_ReviewerProfile(t *testing.T) {
 		"get_work_item", "add_comment",
 	}
 	intendedByPlanner := []string{
-		"list_work_items", "list_comments", "get_last_comment",
+		"list_work_items", "list_comments", "get_last_comment", "list_intake_work_items", "get_intake_work_item",
 	}
 	// Total intended = 9
 
@@ -2147,6 +2159,117 @@ func TestRegisterWithDeps_ReviewerProfile(t *testing.T) {
 		if shouldRegister(name, plannerFull, cfg) {
 			t.Errorf("reviewer profile: shouldRegister(%q, %v, cfg) = true, want false (excluded)", name, plannerFull)
 		}
+	}
+}
+
+func TestIntakeToolsPublicRegistrationAndInvocationAcrossProfiles(t *testing.T) {
+	profiles := []string{"worker", "planner", "reviewer", "full"}
+	for _, profile := range profiles {
+		t.Run(profile, func(t *testing.T) {
+			// Arrange
+			server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
+			intakeItem := plane.IntakeWorkItem{
+				ID:     "intake-10",
+				Status: plane.IntakeStatusAccepted,
+				Issue:  plane.Expandable[plane.IntakeIssue]{Val: &plane.IntakeIssue{ID: "issue-10", SequenceID: 10, Name: "Incoming request"}},
+			}
+			client := &mockClient{
+				listIntakeWorkItemsFn: func(ctx context.Context, projectID string) ([]plane.IntakeWorkItem, error) {
+					return []plane.IntakeWorkItem{intakeItem}, nil
+				},
+				getIntakeWorkItemFn: func(ctx context.Context, projectID, issueID string) (*plane.IntakeWorkItem, error) {
+					return &intakeItem, nil
+				},
+				listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+					return []plane.WorkItem{{ID: "issue-10", SequenceID: 10}}, nil
+				},
+				getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+					return &plane.WorkItem{ID: "issue-10", SequenceID: sequenceID}, nil
+				},
+			}
+			resolver := &mockResolver{
+				resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+					return &plane.Project{ID: "project-1", Identifier: "ASBX"}, nil
+				},
+			}
+			formatter := &mockFormatter{
+				formatIntakeWorkItemsYAMLFn: func(ctx context.Context, items []plane.IntakeWorkItem) (string, error) {
+					return "- identifier: ASBX-10\n", nil
+				},
+			}
+			registerWithDeps(server, client, resolver, formatter, &config.Config{PlaneMCPProfile: profile})
+
+			ct, st := mcp.NewInMemoryTransports()
+			ss, err := server.Connect(context.Background(), st, nil)
+			if err != nil {
+				t.Fatalf("server connect: %v", err)
+			}
+			defer ss.Close()
+			mcpClient := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0"}, nil)
+			cs, err := mcpClient.Connect(context.Background(), ct, nil)
+			if err != nil {
+				t.Fatalf("client connect: %v", err)
+			}
+			defer cs.Close()
+
+			// Act
+			tools, err := cs.ListTools(context.Background(), nil)
+			if err != nil {
+				t.Fatalf("ListTools failed: %v", err)
+			}
+			toolsByName := make(map[string]*mcp.Tool, len(tools.Tools))
+			for _, tool := range tools.Tools {
+				toolsByName[tool.Name] = tool
+			}
+
+			// Assert registration, schema, annotation, and public invocation.
+			for name, requiredProperty := range map[string]string{
+				"list_intake_work_items": "project",
+				"get_intake_work_item":   "identifier",
+			} {
+				tool, ok := toolsByName[name]
+				if !ok {
+					t.Fatalf("profile %q did not register %s", profile, name)
+				}
+				if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
+					t.Errorf("profile %q tool %s should be read-only", profile, name)
+				}
+				schema, err := json.Marshal(tool.InputSchema)
+				if err != nil {
+					t.Fatalf("marshal %s schema: %v", name, err)
+				}
+				if !strings.Contains(string(schema), requiredProperty) {
+					t.Errorf("profile %q tool %s schema missing %q: %s", profile, name, requiredProperty, schema)
+				}
+			}
+
+			listResult, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+				Name:      "list_intake_work_items",
+				Arguments: map[string]any{"project": "ASBX"},
+			})
+			if err != nil {
+				t.Fatalf("public list_intake_work_items call failed: %v", err)
+			}
+			if listResult.IsError {
+				t.Fatalf("public list_intake_work_items returned an error: %+v", listResult.Content)
+			}
+			if text := listResult.Content[0].(*mcp.TextContent).Text; text != "- identifier: ASBX-10\n" {
+				t.Errorf("unexpected public list output: %q", text)
+			}
+			getResult, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+				Name:      "get_intake_work_item",
+				Arguments: map[string]any{"identifier": "ASBX-10"},
+			})
+			if err != nil {
+				t.Fatalf("public get_intake_work_item call failed: %v", err)
+			}
+			if getResult.IsError {
+				t.Fatalf("public get_intake_work_item returned an error: %+v", getResult.Content)
+			}
+			if text := getResult.Content[0].(*mcp.TextContent).Text; text != "- identifier: ASBX-10\n" {
+				t.Errorf("unexpected public get output: %q", text)
+			}
+		})
 	}
 }
 
@@ -5089,6 +5212,439 @@ func TestListWorkItems_LabelsInOutput(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Intake discovery tool tests
+// ---------------------------------------------------------------------------
+
+func TestListIntakeWorkItemsFiltersStatusClientSide(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	items := []plane.IntakeWorkItem{
+		{
+			ID:     "intake-pending",
+			Status: -2,
+			Issue:  plane.Expandable[plane.IntakeIssue]{Val: &plane.IntakeIssue{ID: "issue-10", SequenceID: 10, Name: "Pending"}},
+		},
+		{
+			ID:     "intake-accepted",
+			Status: 1,
+			Issue:  plane.Expandable[plane.IntakeIssue]{Val: &plane.IntakeIssue{ID: "issue-11", SequenceID: 11, Name: "Accepted"}},
+		},
+	}
+	client := &mockClient{
+		listIntakeWorkItemsFn: func(ctx context.Context, projectID string) ([]plane.IntakeWorkItem, error) {
+			if projectID != "project-1" {
+				t.Errorf("expected project-1, got %q", projectID)
+			}
+			return items, nil
+		},
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			return []plane.WorkItem{{ID: "issue-11", SequenceID: 11}}, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "project-1", Identifier: "ASBX"}, nil
+		},
+	}
+	var formatted []plane.IntakeWorkItem
+	formatter := &mockFormatter{
+		formatIntakeWorkItemsYAMLFn: func(ctx context.Context, got []plane.IntakeWorkItem) (string, error) {
+			formatted = got
+			return "- identifier: ASBX-11\n  status: accepted\n", nil
+		},
+	}
+
+	// Act
+	result, err := listIntakeWorkItems(ctx, ListIntakeWorkItemsArgs{
+		Project: "ASBX",
+		Status:  strPtr("accepted"),
+	}, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got: %+v", result.Content)
+	}
+	if len(formatted) != 1 || formatted[0].ID != "intake-accepted" {
+		t.Fatalf("expected only accepted intake item, got %+v", formatted)
+	}
+	if !formatted[0].VisibleInWorkItems {
+		t.Error("accepted item should be visible through normal work-item APIs")
+	}
+}
+
+func TestListIntakeWorkItemsUsesBulkVisibilityLookup(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	items := []plane.IntakeWorkItem{
+		{ID: "intake-pending", Status: plane.IntakeStatusPending, Issue: plane.Expandable[plane.IntakeIssue]{Val: &plane.IntakeIssue{ID: "issue-10", SequenceID: 10}}},
+		{ID: "intake-accepted", Status: plane.IntakeStatusAccepted, Issue: plane.Expandable[plane.IntakeIssue]{Val: &plane.IntakeIssue{ID: "issue-11", SequenceID: 11}}},
+	}
+	listCalls := 0
+	client := &mockClient{
+		listIntakeWorkItemsFn: func(ctx context.Context, projectID string) ([]plane.IntakeWorkItem, error) {
+			return items, nil
+		},
+		listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+			listCalls++
+			if projectID != "project-1" || len(params) != 0 {
+				t.Errorf("unexpected bulk visibility lookup: project=%q params=%v", projectID, params)
+			}
+			return []plane.WorkItem{{ID: "issue-11", SequenceID: 11}}, nil
+		},
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			t.Fatalf("list handler must not perform per-item lookup for sequence %d", sequenceID)
+			return nil, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "project-1", Identifier: "ASBX"}, nil
+		},
+	}
+	var formatted []plane.IntakeWorkItem
+	formatter := &mockFormatter{
+		formatIntakeWorkItemsYAMLFn: func(ctx context.Context, got []plane.IntakeWorkItem) (string, error) {
+			formatted = got
+			return "- identifier: ASBX-10\n- identifier: ASBX-11\n", nil
+		},
+	}
+
+	// Act
+	result, err := listIntakeWorkItems(ctx, ListIntakeWorkItemsArgs{Project: "ASBX"}, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got %+v", result.Content)
+	}
+	if listCalls != 1 {
+		t.Fatalf("expected one bulk visibility lookup, got %d", listCalls)
+	}
+	if len(formatted) != 2 || formatted[0].VisibleInWorkItems || !formatted[1].VisibleInWorkItems {
+		t.Fatalf("unexpected visibility annotations: %+v", formatted)
+	}
+}
+
+func TestListIntakeWorkItemsAcceptanceMatrix(t *testing.T) {
+	// Arrange
+	baseItems := []plane.IntakeWorkItem{{
+		ID:     "intake-10",
+		Status: plane.IntakeStatusAccepted,
+		Issue:  plane.Expandable[plane.IntakeIssue]{Val: &plane.IntakeIssue{ID: "issue-10", SequenceID: 10}},
+	}}
+	resolver := &mockResolver{resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+		return &plane.Project{ID: "project-1", Identifier: "ASBX"}, nil
+	}}
+	newFormatter := func(formatErr error) *mockFormatter {
+		return &mockFormatter{formatIntakeWorkItemsYAMLFn: func(ctx context.Context, items []plane.IntakeWorkItem) (string, error) {
+			if formatErr != nil {
+				return "", formatErr
+			}
+			return "formatted intake", nil
+		}}
+	}
+
+	tests := []struct {
+		name       string
+		client     *mockClient
+		args       ListIntakeWorkItemsArgs
+		formatter  *mockFormatter
+		wantError  bool
+		wantOutput string
+	}{
+		{
+			name: "empty queue",
+			client: &mockClient{listIntakeWorkItemsFn: func(ctx context.Context, projectID string) ([]plane.IntakeWorkItem, error) {
+				return nil, nil
+			}},
+			formatter:  newFormatter(nil),
+			wantOutput: "[]",
+		},
+		{
+			name: "intake API error",
+			client: &mockClient{listIntakeWorkItemsFn: func(ctx context.Context, projectID string) ([]plane.IntakeWorkItem, error) {
+				return nil, errors.New("intake API failed")
+			}},
+			formatter: newFormatter(nil),
+			wantError: true,
+		},
+		{
+			name: "invalid status",
+			client: &mockClient{listIntakeWorkItemsFn: func(ctx context.Context, projectID string) ([]plane.IntakeWorkItem, error) {
+				return baseItems, nil
+			}},
+			args:      ListIntakeWorkItemsArgs{Status: strPtr("unknown")},
+			formatter: newFormatter(nil),
+			wantError: true,
+		},
+		{
+			name: "visibility API error",
+			client: &mockClient{
+				listIntakeWorkItemsFn: func(ctx context.Context, projectID string) ([]plane.IntakeWorkItem, error) {
+					return baseItems, nil
+				},
+				listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+					return nil, errors.New("visibility API failed")
+				},
+			},
+			formatter: newFormatter(nil),
+			wantError: true,
+		},
+		{
+			name: "formatter error",
+			client: &mockClient{
+				listIntakeWorkItemsFn: func(ctx context.Context, projectID string) ([]plane.IntakeWorkItem, error) {
+					return baseItems, nil
+				},
+				listWorkItemsFn: func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
+					return []plane.WorkItem{{SequenceID: 10}}, nil
+				},
+			},
+			formatter: newFormatter(errors.New("formatter failed")),
+			wantError: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Act
+			result, err := listIntakeWorkItems(context.Background(), tc.args, tc.client, resolver, tc.formatter)
+
+			// Assert
+			if err != nil {
+				t.Fatalf("unexpected Go error: %v", err)
+			}
+			if result.IsError != tc.wantError {
+				t.Fatalf("IsError=%v, want %v; content=%+v", result.IsError, tc.wantError, result.Content)
+			}
+			if tc.wantOutput != "" && result.Content[0].(*mcp.TextContent).Text != tc.wantOutput {
+				t.Errorf("output=%q, want %q", result.Content[0].(*mcp.TextContent).Text, tc.wantOutput)
+			}
+		})
+	}
+}
+
+func TestGetIntakeWorkItemResolvesIdentifierAndUsesIssueUUIDDetailRoute(t *testing.T) {
+	// Arrange
+	ctx := context.Background()
+	listed := &plane.IntakeWorkItem{
+		ID:     "intake-10",
+		Status: -2,
+		Issue:  plane.Expandable[plane.IntakeIssue]{Val: &plane.IntakeIssue{ID: "issue-10", SequenceID: 10, Name: "Incoming request"}},
+	}
+	var detailProjectID, detailIssueID string
+	var formatted []plane.IntakeWorkItem
+	client := &mockClient{
+		listIntakeWorkItemsFn: func(ctx context.Context, projectID string) ([]plane.IntakeWorkItem, error) {
+			return []plane.IntakeWorkItem{*listed}, nil
+		},
+		getIntakeWorkItemFn: func(ctx context.Context, projectID, issueID string) (*plane.IntakeWorkItem, error) {
+			detailProjectID, detailIssueID = projectID, issueID
+			return listed, nil
+		},
+		getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+			return nil, errors.New("request failed with status 404: not visible")
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			if input != "ASBX" {
+				t.Errorf("expected project identifier ASBX, got %q", input)
+			}
+			return &plane.Project{ID: "project-1", Identifier: "ASBX"}, nil
+		},
+	}
+	formatter := &mockFormatter{
+		formatIntakeWorkItemsYAMLFn: func(ctx context.Context, got []plane.IntakeWorkItem) (string, error) {
+			formatted = got
+			return "identifier: ASBX-10\nstatus: pending\n", nil
+		},
+	}
+
+	// Act
+	result, err := getIntakeWorkItem(ctx, GetIntakeWorkItemArgs{Identifier: "ASBX-10"}, client, resolver, formatter)
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got: %+v", result.Content)
+	}
+	if detailProjectID != "project-1" || detailIssueID != "issue-10" {
+		t.Fatalf("expected detail route to use project-1/issue-10, got %q/%q", detailProjectID, detailIssueID)
+	}
+	if len(formatted) != 1 || formatted[0].ResolvedIdentifier != "ASBX-10" {
+		t.Fatalf("expected resolved identifier ASBX-10, got %+v", formatted)
+	}
+}
+
+func TestGetIntakeWorkItemMissingRecordExplainsExpiredSnooze(t *testing.T) {
+	// Arrange
+	client := &mockClient{
+		listIntakeWorkItemsFn: func(ctx context.Context, projectID string) ([]plane.IntakeWorkItem, error) {
+			return nil, nil
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "project-1", Identifier: "ASBX"}, nil
+		},
+	}
+
+	// Act
+	result, err := getIntakeWorkItem(context.Background(), GetIntakeWorkItemArgs{Identifier: "ASBX-10"}, client, resolver, &mockFormatter{})
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected an MCP error for a missing intake item")
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "expired snoozed") {
+		t.Errorf("expected expired snooze guidance, got %q", text)
+	}
+}
+
+func TestGetIntakeWorkItem404ExplainsUnderlyingIssueLookup(t *testing.T) {
+	// Arrange
+	item := plane.IntakeWorkItem{
+		ID:     "intake-10",
+		Status: 0,
+		Issue:  plane.Expandable[plane.IntakeIssue]{Val: &plane.IntakeIssue{ID: "issue-10", SequenceID: 10}},
+	}
+	client := &mockClient{
+		listIntakeWorkItemsFn: func(ctx context.Context, projectID string) ([]plane.IntakeWorkItem, error) {
+			return []plane.IntakeWorkItem{item}, nil
+		},
+		getIntakeWorkItemFn: func(ctx context.Context, projectID, issueID string) (*plane.IntakeWorkItem, error) {
+			return nil, errors.New("request failed with status 404: not found")
+		},
+	}
+	resolver := &mockResolver{
+		resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "project-1", Identifier: "ASBX"}, nil
+		},
+	}
+
+	// Act
+	result, err := getIntakeWorkItem(context.Background(), GetIntakeWorkItemArgs{Identifier: "ASBX-10"}, client, resolver, &mockFormatter{})
+
+	// Assert
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected an MCP error for the API 404")
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "404") || !strings.Contains(text, "expired snoozed") {
+		t.Errorf("expected explicit 404/expired-snooze guidance, got %q", text)
+	}
+}
+
+func TestListIntakeWorkItemsProjectResolutionError(t *testing.T) {
+	client := &mockClient{}
+	resolver := &mockResolver{resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+		return nil, errors.New("project API failed")
+	}}
+
+	result, err := listIntakeWorkItems(context.Background(), ListIntakeWorkItemsArgs{Project: "ASBX"}, client, resolver, &mockFormatter{})
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.Content[0].(*mcp.TextContent).Text, "project API failed") {
+		t.Fatalf("expected project resolution error, got %+v", result.Content)
+	}
+}
+
+func TestGetIntakeWorkItemMalformedIdentifier(t *testing.T) {
+	result, err := getIntakeWorkItem(context.Background(), GetIntakeWorkItemArgs{Identifier: "ASBX"}, &mockClient{}, &mockResolver{}, &mockFormatter{})
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.Content[0].(*mcp.TextContent).Text, "invalid identifier") {
+		t.Fatalf("expected malformed identifier error, got %+v", result.Content)
+	}
+}
+
+func TestGetIntakeWorkItemMissingUnderlyingIssueUUID(t *testing.T) {
+	client := &mockClient{
+		listIntakeWorkItemsFn: func(ctx context.Context, projectID string) ([]plane.IntakeWorkItem, error) {
+			return []plane.IntakeWorkItem{{ID: "intake-10", Issue: plane.Expandable[plane.IntakeIssue]{Val: &plane.IntakeIssue{SequenceID: 10}}}}, nil
+		},
+	}
+	resolver := &mockResolver{resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+		return &plane.Project{ID: "project-1", Identifier: "ASBX"}, nil
+	}}
+
+	result, err := getIntakeWorkItem(context.Background(), GetIntakeWorkItemArgs{Identifier: "ASBX-10"}, client, resolver, &mockFormatter{})
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.Content[0].(*mcp.TextContent).Text, "no underlying issue UUID") {
+		t.Fatalf("expected missing issue UUID error, got %+v", result.Content)
+	}
+}
+
+func TestGetIntakeWorkItemClientError(t *testing.T) {
+	client := &mockClient{
+		listIntakeWorkItemsFn: func(ctx context.Context, projectID string) ([]plane.IntakeWorkItem, error) {
+			return []plane.IntakeWorkItem{{ID: "intake-10", Issue: plane.Expandable[plane.IntakeIssue]{Val: &plane.IntakeIssue{ID: "issue-10", SequenceID: 10}}}}, nil
+		},
+		getIntakeWorkItemFn: func(ctx context.Context, projectID, issueID string) (*plane.IntakeWorkItem, error) {
+			return nil, errors.New("detail API failed")
+		},
+	}
+	resolver := &mockResolver{resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+		return &plane.Project{ID: "project-1", Identifier: "ASBX"}, nil
+	}}
+
+	result, err := getIntakeWorkItem(context.Background(), GetIntakeWorkItemArgs{Identifier: "ASBX-10"}, client, resolver, &mockFormatter{})
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.Content[0].(*mcp.TextContent).Text, "detail API failed") {
+		t.Fatalf("expected detail API error, got %+v", result.Content)
+	}
+}
+
+func TestParseIntakeStatusFilter(t *testing.T) {
+	tests := []struct {
+		input string
+		want  int
+	}{
+		{input: "pending", want: -2},
+		{input: "declined", want: -1},
+		{input: "snoozed", want: 0},
+		{input: "accepted", want: 1},
+		{input: "duplicate", want: 2},
+		{input: "2", want: 2},
+	}
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			got, err := parseIntakeStatusFilter(tc.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("parseIntakeStatusFilter(%q) = %d, want %d", tc.input, got, tc.want)
+			}
+		})
+	}
+	if _, err := parseIntakeStatusFilter("unknown"); err == nil {
+		t.Fatal("expected invalid intake status error")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // searchWorkItems handler tests
 // ---------------------------------------------------------------------------
 
@@ -5781,6 +6337,7 @@ func TestToolAnnotations(t *testing.T) {
 		"find_my_work", "get_work_item", "list_project_labels", "list_projects",
 		"search_work_items", "list_states", "list_comments", "get_last_comment",
 		"list_work_items", "list_modules", "list_relations", "list_children",
+		"list_intake_work_items", "get_intake_work_item",
 	}
 	for _, name := range readOnlyTools {
 		tool, ok := toolsByName[name]
