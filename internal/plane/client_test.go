@@ -635,6 +635,95 @@ func TestClientGetIntakeWorkItemUsesUnderlyingIssueID(t *testing.T) {
 	}
 }
 
+func TestEnrichmentNotAppliedErrorMessage(t *testing.T) {
+	err := &EnrichmentNotAppliedError{
+		Identifier:    "ASBX-10",
+		IssueUUID:     "issue-10",
+		IgnoredFields: []string{"name", "priority"},
+		Causes:        []string{"cause one", "cause two"},
+	}
+	want := "enrichment_not_applied: intake record ASBX-10 does not reflect the requested update (HTTP 2xx but Plane did not store fields name, priority); likely causes: cause one; cause two"
+	if err.Error() != want {
+		t.Errorf("Error() = %q, want %q", err.Error(), want)
+	}
+
+	statusErr := &EnrichmentNotAppliedError{
+		Identifier:    "ASBX-11",
+		IssueUUID:     "issue-11",
+		StatusChanged: true,
+		Causes:        []string{"status drifted"},
+	}
+	statusWant := "enrichment_not_applied: intake record ASBX-11 does not reflect the requested update (HTTP 2xx but Plane did not store the triage status changed unexpectedly); likely causes: status drifted"
+	if statusErr.Error() != statusWant {
+		t.Errorf("status-change variant Error() = %q, want %q", statusErr.Error(), statusWant)
+	}
+
+	combined := &EnrichmentNotAppliedError{
+		Identifier:    "ASBX-12",
+		IssueUUID:     "issue-12",
+		IgnoredFields: []string{"description"},
+		StatusChanged: true,
+		Causes:        []string{"cause"},
+	}
+	if !strings.Contains(combined.Error(), "fields description") || !strings.Contains(combined.Error(), "the triage status changed unexpectedly") {
+		t.Errorf("combined variant missing clauses: %q", combined.Error())
+	}
+}
+
+func TestClientCreateIntakeWorkItemNestsIssueFields(t *testing.T) {
+	// Arrange
+	cfg := &config.Config{
+		PlaneAPIKey:        "test-key",
+		PlaneBaseURL:       "https://plane.example.com",
+		PlaneWorkspaceSlug: "test-workspace",
+	}
+	client := NewClient(cfg)
+	client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+		expectedPath := "/api/v1/workspaces/test-workspace/projects/project-1/intake-issues/"
+		if req.URL.Path != expectedPath {
+			t.Errorf("expected path %q, got %q", expectedPath, req.URL.Path)
+		}
+		if req.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", req.Method)
+		}
+		var payload struct {
+			Issue map[string]any `json:"issue"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		if payload.Issue["name"] != "Quick idea" || payload.Issue["priority"] != "high" {
+			t.Errorf("unexpected nested issue fields: %+v", payload.Issue)
+		}
+		return &http.Response{
+			StatusCode: http.StatusCreated,
+			Body: io.NopCloser(strings.NewReader(`{
+				"id": "intake-9",
+				"issue": {"id": "issue-9", "name": "Quick idea", "sequence_id": 9},
+				"status": -2,
+				"source": "IN_APP"
+			}`)),
+		}, nil
+	})
+
+	// Act
+	item, err := client.CreateIntakeWorkItem(context.Background(), "project-1", map[string]any{
+		"name":     "Quick idea",
+		"priority": "high",
+	})
+
+	// Assert
+	if err != nil {
+		t.Fatalf("CreateIntakeWorkItem failed: %v", err)
+	}
+	if item.ID != "intake-9" || item.Status != -2 || item.Source != "IN_APP" {
+		t.Errorf("unexpected intake record: %+v", item)
+	}
+	if item.UnderlyingIssueID() != "issue-9" {
+		t.Errorf("expected underlying issue UUID issue-9, got %q", item.UnderlyingIssueID())
+	}
+}
+
 func TestIntakeWorkItemUsesIssueDetailWhenIssueIsOnlyAnID(t *testing.T) {
 	// Arrange
 	var item IntakeWorkItem

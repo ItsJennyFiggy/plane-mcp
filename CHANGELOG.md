@@ -4,6 +4,8 @@
 
 ### Features
 
+* **tools:** add `create_intake_work_item` (all profiles) and `update_intake_work_item` (planner/full) for Intake idea submission and verified enrichment (AGENT-179)
+* **plane:** add `CreateIntakeWorkItem` client method and typed `EnrichmentNotAppliedError` for silently ignored intake issue fields (AGENT-179)
 * **tools:** add read-only Plane Intake discovery tools with identifier resolution, client-side status filtering, snooze/duplicate metadata, and bulk normal work-item visibility (AGENT-180)
 * **plane:** bound generic list pagination and reject repeated cursors to prevent malformed upstream responses from looping indefinitely (AGENT-180)
 
