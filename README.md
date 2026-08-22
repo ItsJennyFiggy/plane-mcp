@@ -222,6 +222,23 @@ Intake discovery details:
 * Intake list visibility is annotated with one additional normal-work-item list request per project. Records absent from that response are returned with `visible_in_work_items: false`; a non-404 visibility API failure fails the tool response rather than returning an ambiguous result.
 * `get_intake_work_item` resolves the project-prefixed identifier through the Intake list and then uses the underlying issue UUID for the detail route. A missing active-queue record or detail `404` includes guidance that an expired snooze or visibility change may be responsible.
 
+### Intake submission & enrichment
+
+| Tool | Description | `worker` | `reviewer` | `planner` | `full` |
+|---|---|:---:|:---:|:---:|:---:|
+| `create_intake_work_item` | Submit a quick idea to a project's Intake queue; the issue is created directly in Triage with pending status and `IN_APP` source attribution. | ✅ | ✅ | ✅ | ✅ |
+| `update_intake_work_item` | Enrich a pending Intake idea (`name`, `description`, `priority`) with mandatory read-after-write verification. | | | ✅ | ✅ |
+
+Intake submission details:
+
+* **Why Intake submission differs from `create_task`:** ideas land in Triage for human disposition instead of becoming canonical work items. Submission uses the dedicated Intake endpoint — `create_task` is deliberately not overloaded so the human-triage boundary stays visible in tool semantics.
+* Creation returns the Intake record id, the underlying issue UUID, the resolved project-prefixed identifier (e.g. `ASBX-10`), and canonical pending status. If Plane's create response omits expanded issue data, the identifier is reconciled from a fresh Intake list read or the call fails loudly rather than guessing.
+* Priority is validated client-side against `urgent|high|medium|low|none`, mirroring Plane's server-side validation, so bad values fail without an API round-trip.
+* **Verified enrichment:** every requested field is re-read after the PATCH. Plane's Intake endpoint silently drops unsupported issue fields instead of rejecting them, so any field that fails verification is reported as a typed `enrichment_not_applied` error naming the ignored fields — updates are never claimed successful when they were not stored. An enrichment that unexpectedly changes the triage status is also rejected.
+* Enrichment is idempotent: re-running with already-stored values reports `No change needed` without writes.
+
+**Deferred surfaces:** read-only Intake activity/history retrieval is deferred because no stable PAT API evidence exists for attributing submission and triage actions. Intake deletion is omitted entirely: its safety and verification contract could not be demonstrated against production data.
+
 ### Intake triage
 
 | Tool | Description | `worker` | `reviewer` | `planner` | `full` |

@@ -34,6 +34,7 @@ type planeClient interface {
 	ListIntakeWorkItems(ctx context.Context, projectID string) ([]plane.IntakeWorkItem, error)
 	GetIntakeWorkItem(ctx context.Context, projectID, issueID string) (*plane.IntakeWorkItem, error)
 	TransitionIntakeWorkItem(ctx context.Context, projectID, issueID string, body map[string]any) (*plane.IntakeWorkItem, error)
+	CreateIntakeWorkItem(ctx context.Context, projectID string, body map[string]any) (*plane.IntakeWorkItem, error)
 	ListWorkItems(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error)
 	SearchWorkItems(ctx context.Context, params map[string]string) ([]plane.SearchWorkItemResult, error)
 	CreateWorkItem(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error)
@@ -402,6 +403,23 @@ type SnoozeIntakeWorkItemArgs struct {
 type MarkIntakeDuplicateArgs struct {
 	Identifier  string `json:"identifier"`
 	DuplicateTo string `json:"duplicate_to"`
+}
+
+// CreateIntakeWorkItemArgs are the arguments for the create_intake_work_item tool.
+type CreateIntakeWorkItemArgs struct {
+	Project     string `json:"project"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Priority    string `json:"priority,omitempty"`
+}
+
+// UpdateIntakeWorkItemArgs are the arguments for the update_intake_work_item tool.
+// Pointer fields distinguish "not provided" from "set to empty".
+type UpdateIntakeWorkItemArgs struct {
+	Identifier  string  `json:"identifier"`
+	Name        *string `json:"name,omitempty"`
+	Description *string `json:"description,omitempty"`
+	Priority    *string `json:"priority,omitempty"`
 }
 
 // ReportProgressArgs are the arguments for the report_progress tool.
@@ -1211,6 +1229,250 @@ func markIntakeDuplicate(ctx context.Context, args MarkIntakeDuplicateArgs, clie
 		return nil
 	}
 	return executeIntakeTransition(ctx, args.Identifier, plane.IntakeStatusDuplicate, buildBody, nil, client, resolver, formatter)
+}
+
+// ---------------------------------------------------------------------------
+// Intake submission & enrichment (AGENT-179)
+// ---------------------------------------------------------------------------
+
+// validIntakePriorities mirrors Plane's server-side validation of the issue
+// priority field so callers get a clean error without burning a request.
+var validIntakePriorities = map[string]bool{
+	"urgent": true,
+	"high":   true,
+	"medium": true,
+	"low":    true,
+	"none":   true,
+}
+
+// normalizeIntakePriority lowercases and validates an optional user-supplied
+// priority, returning the canonical value or an error.
+func normalizeIntakePriority(input string) (string, error) {
+	priority := strings.ToLower(strings.TrimSpace(input))
+	if !validIntakePriorities[priority] {
+		return "", fmt.Errorf("invalid priority %q: use urgent, high, medium, low, or none", input)
+	}
+	return priority, nil
+}
+
+// deriveIntakeIdentifier builds the canonical project-prefixed identifier for
+// an intake record's underlying issue using the resolved project.
+func deriveIntakeIdentifier(project *plane.Project, item *plane.IntakeWorkItem) string {
+	issue := item.UnderlyingIssue()
+	if project == nil || issue == nil || issue.SequenceID <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s-%d", project.Identifier, issue.SequenceID)
+}
+
+// reconcileCreatedIntake fills in expanded issue data missing from the POST
+// response by matching the new record in a fresh Intake list read. Plane's
+// intake serializer always returns the underlying issue UUID, but the sequence
+// id needed for the canonical identifier may only be available expanded.
+func reconcileCreatedIntake(ctx context.Context, created *plane.IntakeWorkItem, project *plane.Project, client planeClient) error {
+	if deriveIntakeIdentifier(project, created) != "" {
+		return nil
+	}
+	items, err := client.ListIntakeWorkItems(ctx, project.ID)
+	if err != nil {
+		return fmt.Errorf("intake work item was created (id %s) but could not be confirmed in the queue to resolve its identifier: %v", created.ID, err)
+	}
+	for i := range items {
+		if items[i].ID == created.ID {
+			*created = items[i]
+			return nil
+		}
+	}
+	return fmt.Errorf("intake work item was created (id %s) but was not found in a fresh queue read to resolve its identifier; it may have been moved out of Triage already", created.ID)
+}
+
+// createIntakeWorkItem implements the create_intake_work_item tool logic.
+// Submission goes directly into Triage (status -2 pending, source IN_APP) via
+// the dedicated Intake endpoint — create_task is intentionally not overloaded
+// so the human-triage boundary stays visible.
+func createIntakeWorkItem(ctx context.Context, args CreateIntakeWorkItemArgs, client planeClient, resolver planeResolver, formatter planeFormatter) (*mcp.CallToolResult, error) {
+	project, err := resolver.ResolveProject(ctx, args.Project)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to resolve project %q: %v", args.Project, err)), nil
+	}
+
+	name := strings.TrimSpace(args.Name)
+	if name == "" {
+		return toolError("name is required: provide a short idea title"), nil
+	}
+
+	issue := map[string]any{"name": name}
+	if desc := strings.TrimSpace(args.Description); desc != "" {
+		issue["description_html"] = convertDescriptionToHTML(desc)
+	}
+	if args.Priority != "" {
+		priority, err := normalizeIntakePriority(args.Priority)
+		if err != nil {
+			return toolError(err.Error()), nil
+		}
+		if priority != "none" {
+			issue["priority"] = priority
+		}
+	}
+
+	created, err := client.CreateIntakeWorkItem(ctx, project.ID, issue)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to create intake work item: %v", err)), nil
+	}
+	if created == nil || created.ID == "" {
+		return toolError("failed to create intake work item: Plane returned an empty response"), nil
+	}
+	created.ResolvedIdentifier = deriveIntakeIdentifier(project, created)
+	if created.ResolvedIdentifier == "" {
+		if err := reconcileCreatedIntake(ctx, created, project, client); err != nil {
+			return toolError(err.Error()), nil
+		}
+		created.ResolvedIdentifier = deriveIntakeIdentifier(project, created)
+	}
+
+	yamlOut, err := formatter.FormatIntakeWorkItemsYAML(ctx, []plane.IntakeWorkItem{*created})
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to format created intake work item: %v", err)), nil
+	}
+	return toolText(yamlOut), nil
+}
+
+// verifyIntakeEnrichment re-reads the intake record after a PATCH carrying
+// nested issue enrichment fields and fails with a typed enrichment_not_applied
+// error when Plane returned 2xx without storing every requested field (the
+// intake serializer silently drops unsupported fields) or when the update
+// unexpectedly changed the triage status.
+func verifyIntakeEnrichment(ctx context.Context, client planeClient, project *plane.Project, identifier string, issueUUID string, priorStatus int, fields map[string]any) (*plane.IntakeWorkItem, error) {
+	after, err := client.GetIntakeWorkItem(ctx, project.ID, issueUUID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to verify intake update for %s: %w", identifier, err)
+	}
+	if after == nil {
+		return nil, fmt.Errorf("failed to verify intake update for %s: Plane returned an empty response", identifier)
+	}
+
+	var ignored []string
+	issue := after.UnderlyingIssue()
+	if want, ok := fields["name"].(string); ok && (issue == nil || issue.Name != want) {
+		ignored = append(ignored, "name")
+	}
+	if want, ok := fields["priority"].(string); ok && (issue == nil || issue.Priority != want) {
+		ignored = append(ignored, "priority")
+	}
+	if want, ok := fields["description_html"].(string); ok && (issue == nil || issue.DescriptionHTML != want) {
+		ignored = append(ignored, "description")
+	}
+	statusChanged := after.Status != priorStatus
+
+	if len(ignored) == 0 && !statusChanged {
+		return after, nil
+	}
+
+	causes := []string{fmt.Sprintf(
+		"the API token's role in project %s may be insufficient to modify Intake records; Plane returns HTTP 200 without applying unauthorized changes",
+		project.Identifier,
+	)}
+	if len(ignored) > 0 {
+		causes = append(causes, "Plane's Intake endpoint silently drops unsupported issue fields; the supported enrichment fields are name, description, and priority")
+	}
+	if statusChanged {
+		causes = append(causes, fmt.Sprintf("the update changed the triage status from %q to %q; enrichment must not alter triage state", plane.IntakeStatusName(priorStatus), plane.IntakeStatusName(after.Status)))
+	}
+	return nil, &plane.EnrichmentNotAppliedError{
+		Identifier:    identifier,
+		IssueUUID:     issueUUID,
+		IgnoredFields: ignored,
+		StatusChanged: statusChanged,
+		Causes:        causes,
+	}
+}
+
+// updateIntakeWorkItem implements the update_intake_work_item tool logic.
+// Enrichment PATCHes nested issue fields through the same intake detail route
+// used by triage actions, then verifies every requested field was stored.
+func updateIntakeWorkItem(ctx context.Context, args UpdateIntakeWorkItemArgs, client planeClient, resolver planeResolver, formatter planeFormatter) (*mcp.CallToolResult, error) {
+	if args.Name == nil && args.Description == nil && args.Priority == nil {
+		return toolError("nothing to update: provide at least one of name, description, or priority"), nil
+	}
+
+	fields := map[string]any{}
+	if args.Name != nil {
+		name := strings.TrimSpace(*args.Name)
+		if name == "" {
+			return toolError("name cannot be empty; omit the field to keep the current title"), nil
+		}
+		fields["name"] = name
+	}
+	if args.Description != nil {
+		fields["description_html"] = convertDescriptionToHTML(strings.TrimSpace(*args.Description))
+	}
+	if args.Priority != nil {
+		priority, err := normalizeIntakePriority(*args.Priority)
+		if err != nil {
+			return toolError(err.Error()), nil
+		}
+		fields["priority"] = priority
+	}
+
+	project, matched, err := resolveActiveIntakeRecord(ctx, args.Identifier, client, resolver)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+
+	issueUUID := matched.UnderlyingIssueID()
+	if issueUUID == "" {
+		return toolError(fmt.Sprintf("intake work item %s has no underlying issue UUID in the Plane response", args.Identifier)), nil
+	}
+
+	// Idempotent short-circuit: skip all writes when the record already
+	// carries every requested value.
+	current := matched.UnderlyingIssue()
+	unchanged := true
+	if want, ok := fields["name"].(string); ok && (current == nil || current.Name != want) {
+		unchanged = false
+	}
+	if want, ok := fields["priority"].(string); ok && (current == nil || current.Priority != want) {
+		unchanged = false
+	}
+	if want, ok := fields["description_html"].(string); ok && (current == nil || current.DescriptionHTML != want) {
+		unchanged = false
+	}
+	if unchanged {
+		matched.ResolvedIdentifier = args.Identifier
+		yamlOut, err := formatter.FormatIntakeWorkItemsYAML(ctx, []plane.IntakeWorkItem{*matched})
+		if err != nil {
+			return toolError(fmt.Sprintf("failed to format intake work item %s: %v", args.Identifier, err)), nil
+		}
+		return toolText(fmt.Sprintf(
+			"No change needed: intake work item %s already carries the requested values.\n\n%s",
+			args.Identifier, yamlOut,
+		)), nil
+	}
+
+	if _, err := client.TransitionIntakeWorkItem(ctx, project.ID, issueUUID, map[string]any{"issue": fields}); err != nil {
+		return toolError(fmt.Sprintf("failed to update intake work item %s: %v", args.Identifier, err)), nil
+	}
+
+	verified, err := verifyIntakeEnrichment(ctx, client, project, args.Identifier, issueUUID, matched.Status, fields)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+
+	verified.ResolvedIdentifier = args.Identifier
+	if verified.UnderlyingIssue() == nil {
+		verified.Issue = matched.Issue
+		verified.IssueDetail = matched.IssueDetail
+	}
+	if err := annotateIntakeItem(ctx, verified, project, client); err != nil {
+		return toolError(err.Error()), nil
+	}
+	verified.ResolvedIdentifier = args.Identifier
+
+	yamlOut, err := formatter.FormatIntakeWorkItemsYAML(ctx, []plane.IntakeWorkItem{*verified})
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to format intake work item %s: %v", args.Identifier, err)), nil
+	}
+	return toolText(yamlOut), nil
 }
 
 // listComments implements the list_comments tool logic.
@@ -2923,6 +3185,47 @@ func markIntakeDuplicateInputSchema() *jsonschema.Schema {
 	return schema
 }
 
+func createIntakeWorkItemInputSchema() *jsonschema.Schema {
+	schema, err := jsonschema.For[CreateIntakeWorkItemArgs](nil)
+	if err != nil {
+		panic(fmt.Sprintf("create_intake_work_item: failed to build input schema: %v", err))
+	}
+	if name, ok := schema.Properties["name"]; ok {
+		name.Description = "Short idea title."
+	}
+	if desc, ok := schema.Properties["description"]; ok {
+		desc.Description = "Optional Markdown description converted to Plane rich text."
+	}
+	if priority, ok := schema.Properties["priority"]; ok {
+		priority.Enum = []any{"urgent", "high", "medium", "low", "none"}
+		priority.Default = json.RawMessage(`"none"`)
+		priority.Description = "Optional priority; defaults to none."
+	}
+	required := schema.Required[:0]
+	for _, req := range schema.Required {
+		if req != "priority" {
+			required = append(required, req)
+		}
+	}
+	schema.Required = required
+	return schema
+}
+
+func updateIntakeWorkItemInputSchema() *jsonschema.Schema {
+	schema, err := jsonschema.For[UpdateIntakeWorkItemArgs](nil)
+	if err != nil {
+		panic(fmt.Sprintf("update_intake_work_item: failed to build input schema: %v", err))
+	}
+	if id, ok := schema.Properties["identifier"]; ok {
+		id.Description = "Project-prefixed identifier of a pending Intake item (e.g. ASBX-10)."
+	}
+	if priority, ok := schema.Properties["priority"]; ok {
+		priority.Enum = []any{"urgent", "high", "medium", "low", "none"}
+		priority.Description = "Replacement priority."
+	}
+	return schema
+}
+
 // ---------------------------------------------------------------------------
 // Register — wires up all tools to the MCP server
 // ---------------------------------------------------------------------------
@@ -3156,6 +3459,30 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &falsePtr, IdempotentHint: true, OpenWorldHint: &falseOW},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args MarkIntakeDuplicateArgs) (*mcp.CallToolResult, any, error) {
 			result, err := markIntakeDuplicate(ctx, args, client, resolver, formatter)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("create_intake_work_item", workerPlannerFullReviewer, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "create_intake_work_item",
+			Description: "Submit a quick idea to a project's Intake queue. The issue is created directly in Triage with pending status and IN_APP source — distinct from create_task, which creates canonical work items. Returns the Intake record id, underlying issue id, resolved identifier (e.g. ASBX-10), and status.",
+			InputSchema: createIntakeWorkItemInputSchema(),
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &falsePtr, IdempotentHint: false, OpenWorldHint: &falseOW},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args CreateIntakeWorkItemArgs) (*mcp.CallToolResult, any, error) {
+			result, err := createIntakeWorkItem(ctx, args, client, resolver, formatter)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("update_intake_work_item", plannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "update_intake_work_item",
+			Description: "Enrich a pending Plane Intake idea by its project-prefixed identifier. Supported fields are name, description (Markdown converted to rich text), and priority. Every requested field is re-read after the write; unsupported or silently ignored fields are reported as errors rather than claimed successes.",
+			InputSchema: updateIntakeWorkItemInputSchema(),
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &truePtr, IdempotentHint: true, OpenWorldHint: &falseOW},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args UpdateIntakeWorkItemArgs) (*mcp.CallToolResult, any, error) {
+			result, err := updateIntakeWorkItem(ctx, args, client, resolver, formatter)
 			return result, nil, err
 		})
 	}

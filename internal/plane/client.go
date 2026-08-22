@@ -334,6 +334,26 @@ func (e *TransitionNotAppliedError) Error() string {
 	)
 }
 
+// EnrichmentNotAppliedError reports a 2xx intake PATCH carrying nested issue
+// enrichment fields that Plane did not store. The Intake serializer silently
+// drops unsupported issue fields instead of rejecting them, so callers must
+// re-read and compare; this error names every field that failed verification
+// and flags unintended triage-status changes.
+type EnrichmentNotAppliedError struct {
+	Identifier    string   // project-prefixed work-item identifier (e.g. ASBX-10)
+	IssueUUID     string   // underlying issue UUID used by the intake detail route
+	IgnoredFields []string // requested fields absent from the re-read record (verified field names)
+	StatusChanged bool     // true when the enrichment moved the record out of its prior status
+	Causes        []string // likely causes, most likely first
+}
+
+func (e *EnrichmentNotAppliedError) Error() string {
+	return fmt.Sprintf(
+		"enrichment_not_applied: intake record %s does not reflect the requested update (HTTP 2xx but Plane did not store: %s); likely causes: %s",
+		e.Identifier, strings.Join(e.IgnoredFields, ", "), strings.Join(e.Causes, "; "),
+	)
+}
+
 // CommentActorDetail represents the actor (user) that authored a comment.
 type CommentActorDetail struct {
 	ID          string `json:"id"`
@@ -735,6 +755,23 @@ func (c *Client) TransitionIntakeWorkItem(ctx context.Context, projectID, issueI
 	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/intake-issues/%s/", c.WorkspaceSlug, projectID, issueID)
 	var item IntakeWorkItem
 	if err := c.request(ctx, "PATCH", path, map[string]string{"expand": "issue"}, body, &item); err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
+// CreateIntakeWorkItem submits a new idea directly into a project's Intake
+// queue. Plane creates the underlying issue in the project's Triage state with
+// an intake record (status -2 pending, source IN_APP) in one call; no separate
+// state transition is needed. The body carries issue fields (name, priority,
+// description_html) nested under "issue" per the intake serializer contract.
+// Priority is validated server-side against none|low|medium|high|urgent.
+// Path: POST /api/v1/workspaces/{slug}/projects/{projectID}/intake-issues/
+func (c *Client) CreateIntakeWorkItem(ctx context.Context, projectID string, body map[string]any) (*IntakeWorkItem, error) {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/intake-issues/", c.WorkspaceSlug, projectID)
+	payload := map[string]any{"issue": body}
+	var item IntakeWorkItem
+	if err := c.request(ctx, "POST", path, map[string]string{"expand": "issue"}, payload, &item); err != nil {
 		return nil, err
 	}
 	return &item, nil
