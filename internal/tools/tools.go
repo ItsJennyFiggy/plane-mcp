@@ -33,6 +33,7 @@ type planeClient interface {
 	GetWorkItemByIdentifier(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error)
 	ListIntakeWorkItems(ctx context.Context, projectID string) ([]plane.IntakeWorkItem, error)
 	GetIntakeWorkItem(ctx context.Context, projectID, issueID string) (*plane.IntakeWorkItem, error)
+	TransitionIntakeWorkItem(ctx context.Context, projectID, issueID string, body map[string]any) (*plane.IntakeWorkItem, error)
 	ListWorkItems(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error)
 	SearchWorkItems(ctx context.Context, params map[string]string) ([]plane.SearchWorkItemResult, error)
 	CreateWorkItem(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error)
@@ -378,6 +379,29 @@ type ListIntakeWorkItemsArgs struct {
 // GetIntakeWorkItemArgs are the arguments for the get_intake_work_item tool.
 type GetIntakeWorkItemArgs struct {
 	Identifier string `json:"identifier"`
+}
+
+// AcceptIntakeWorkItemArgs are the arguments for the accept_intake_work_item tool.
+type AcceptIntakeWorkItemArgs struct {
+	Identifier string `json:"identifier"`
+}
+
+// DeclineIntakeWorkItemArgs are the arguments for the decline_intake_work_item tool.
+type DeclineIntakeWorkItemArgs struct {
+	Identifier string  `json:"identifier"`
+	Reason     *string `json:"reason,omitempty"`
+}
+
+// SnoozeIntakeWorkItemArgs are the arguments for the snooze_intake_work_item tool.
+type SnoozeIntakeWorkItemArgs struct {
+	Identifier  string `json:"identifier"`
+	SnoozedTill string `json:"snoozed_till"`
+}
+
+// MarkIntakeDuplicateArgs are the arguments for the mark_intake_duplicate tool.
+type MarkIntakeDuplicateArgs struct {
+	Identifier  string `json:"identifier"`
+	DuplicateTo string `json:"duplicate_to"`
 }
 
 // ReportProgressArgs are the arguments for the report_progress tool.
@@ -857,38 +881,45 @@ func listIntakeWorkItems(ctx context.Context, args ListIntakeWorkItemsArgs, clie
 	return toolText(yamlOut), nil
 }
 
-// getIntakeWorkItem implements identifier-based intake lookup. The list route
-// resolves the sequence identifier to the underlying issue UUID; the detail
-// route is then called with that UUID as required by Plane.
-func getIntakeWorkItem(ctx context.Context, args GetIntakeWorkItemArgs, client planeClient, resolver planeResolver, formatter planeFormatter) (*mcp.CallToolResult, error) {
-	projectIdentifier, sequenceID, err := parseIdentifier(args.Identifier)
+// resolveActiveIntakeRecord parses a project-prefixed identifier, resolves the
+// project, and locates the record in the active intake queue. Plane CE omits
+// expired snoozed records from intake list responses, so those are reported as
+// not found here.
+func resolveActiveIntakeRecord(ctx context.Context, identifier string, client planeClient, resolver planeResolver) (*plane.Project, *plane.IntakeWorkItem, error) {
+	projectIdentifier, sequenceID, err := parseIdentifier(identifier)
 	if err != nil {
-		return toolError(err.Error()), nil
+		return nil, nil, err
 	}
 
 	project, err := resolver.ResolveProject(ctx, projectIdentifier)
 	if err != nil {
-		return toolError(fmt.Sprintf("failed to resolve project %q: %v", projectIdentifier, err)), nil
+		return nil, nil, fmt.Errorf("failed to resolve project %q: %w", projectIdentifier, err)
 	}
 
 	items, err := client.ListIntakeWorkItems(ctx, project.ID)
 	if err != nil {
-		return toolError(fmt.Sprintf("failed to list intake work items for %s: %v", args.Identifier, err)), nil
+		return nil, nil, fmt.Errorf("failed to list intake work items for %s: %w", identifier, err)
 	}
 
-	var matched *plane.IntakeWorkItem
 	for i := range items {
 		issue := items[i].UnderlyingIssue()
 		if issue != nil && issue.SequenceID == sequenceID {
-			matched = &items[i]
-			break
+			return project, &items[i], nil
 		}
 	}
-	if matched == nil {
-		return toolError(fmt.Sprintf(
-			"intake work item %s was not found in the active intake queue; Plane omits expired snoozed records from intake list responses",
-			args.Identifier,
-		)), nil
+	return nil, nil, fmt.Errorf(
+		"intake work item %s was not found in the active intake queue; Plane omits expired snoozed records from intake list responses",
+		identifier,
+	)
+}
+
+// getIntakeWorkItem implements identifier-based intake lookup. The list route
+// resolves the sequence identifier to the underlying issue UUID; the detail
+// route is then called with that UUID as required by Plane.
+func getIntakeWorkItem(ctx context.Context, args GetIntakeWorkItemArgs, client planeClient, resolver planeResolver, formatter planeFormatter) (*mcp.CallToolResult, error) {
+	project, matched, err := resolveActiveIntakeRecord(ctx, args.Identifier, client, resolver)
+	if err != nil {
+		return toolError(err.Error()), nil
 	}
 
 	issueID := matched.UnderlyingIssueID()
@@ -924,6 +955,244 @@ func getIntakeWorkItem(ctx context.Context, args GetIntakeWorkItemArgs, client p
 		return toolError(fmt.Sprintf("failed to format intake work item: %v", err)), nil
 	}
 	return toolText(yamlOut), nil
+}
+
+// defaultStateCause inspects the project's states to explain why an acceptance
+// was not applied. Accepting moves the underlying issue to the project's
+// default state; when none is configured Plane silently skips the move. An
+// empty result means no cause was found.
+func defaultStateCause(ctx context.Context, client planeClient, project *plane.Project) string {
+	states, err := client.ListStates(ctx, project.ID)
+	if err != nil {
+		return fmt.Sprintf("could not inspect project %s states to confirm a default state is configured: %v", project.Identifier, err)
+	}
+	for _, state := range states {
+		if state.Default {
+			return ""
+		}
+	}
+	return fmt.Sprintf("project %s has no default state configured; accepted items cannot move out of Triage", project.Identifier)
+}
+
+// verifyIntakeTransition re-reads the intake record after a PATCH and fails
+// with a typed transition_not_applied error when Plane returned 2xx without
+// applying the requested semantic state (status plus any extra fields).
+func verifyIntakeTransition(ctx context.Context, client planeClient, project *plane.Project, identifier string, issueUUID string, body map[string]any) (*plane.IntakeWorkItem, error) {
+	wantStatus, ok := body["status"].(int)
+	if !ok {
+		return nil, fmt.Errorf("internal error: transition body for %s has no integer status", identifier)
+	}
+
+	after, err := client.GetIntakeWorkItem(ctx, project.ID, issueUUID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to verify intake transition for %s: %w", identifier, err)
+	}
+	if after == nil {
+		return nil, fmt.Errorf("failed to verify intake transition for %s: Plane returned an empty response", identifier)
+	}
+
+	extraCauses := mismatchedIntakeExtras(after, body)
+	if after.Status == wantStatus && len(extraCauses) == 0 {
+		return after, nil
+	}
+
+	causes := []string{fmt.Sprintf(
+		"the API token's role in project %s may be insufficient to modify Intake records; Plane returns HTTP 200 without applying unauthorized transitions",
+		project.Identifier,
+	)}
+	causes = append(causes, extraCauses...)
+	if wantStatus == plane.IntakeStatusAccepted {
+		if cause := defaultStateCause(ctx, client, project); cause != "" {
+			causes = append(causes, cause)
+		}
+	}
+	return nil, &plane.TransitionNotAppliedError{
+		Identifier: identifier,
+		IssueUUID:  issueUUID,
+		Requested:  plane.IntakeStatusName(wantStatus),
+		Observed:   plane.IntakeStatusName(after.Status),
+		Causes:     causes,
+	}
+}
+
+// mismatchedIntakeExtras compares snoozed_till and duplicate_to expectations
+// in the PATCH body against the re-read record, returning a likely-cause
+// message per mismatch.
+func mismatchedIntakeExtras(after *plane.IntakeWorkItem, body map[string]any) []string {
+	var causes []string
+	if want, ok := body["snoozed_till"].(string); ok {
+		if after.SnoozedTill == nil || *after.SnoozedTill != want {
+			causes = append(causes, "Plane accepted the request but did not store the requested snoozed_till value")
+		}
+	}
+	if want, ok := body["duplicate_to"].(string); ok {
+		if after.DuplicateTo == nil || *after.DuplicateTo != want {
+			causes = append(causes, "Plane accepted the request but did not store the requested duplicate_to value")
+		}
+	}
+	return causes
+}
+
+// executeIntakeTransition runs the shared triage pipeline: identifier
+// resolution, idempotent short-circuit, preflight hook, PATCH via the
+// underlying issue UUID, mandatory read-after-write verification, visibility
+// annotation, and YAML formatting. The preflight hook may mutate body to add
+// action-specific fields (e.g. snoozed_till) before the PATCH is sent.
+func executeIntakeTransition(
+	ctx context.Context,
+	identifier string,
+	targetStatus int,
+	preflight func(body map[string]any, project *plane.Project, matched *plane.IntakeWorkItem, issueUUID string) error,
+	client planeClient,
+	resolver planeResolver,
+	formatter planeFormatter,
+) (*mcp.CallToolResult, error) {
+	project, matched, err := resolveActiveIntakeRecord(ctx, identifier, client, resolver)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+
+	issueUUID := matched.UnderlyingIssueID()
+	if issueUUID == "" {
+		return toolError(fmt.Sprintf("intake work item %s has no underlying issue UUID in the Plane response", identifier)), nil
+	}
+
+	body := map[string]any{"status": targetStatus}
+	if preflight != nil {
+		if err := preflight(body, project, matched, issueUUID); err != nil {
+			return toolError(err.Error()), nil
+		}
+	}
+
+	// Idempotent short-circuit: skip the PATCH when the record already carries
+	// the requested semantic state.
+	if matched.Status == targetStatus && len(mismatchedIntakeExtras(matched, body)) == 0 {
+		matched.ResolvedIdentifier = identifier
+		if err := annotateIntakeItem(ctx, matched, project, client); err != nil {
+			return toolError(err.Error()), nil
+		}
+		yamlOut, err := formatter.FormatIntakeWorkItemsYAML(ctx, []plane.IntakeWorkItem{*matched})
+		if err != nil {
+			return toolError(fmt.Sprintf("failed to format intake work item %s: %v", identifier, err)), nil
+		}
+		return toolText(fmt.Sprintf(
+			"No change needed: intake work item %s already has status %q with the requested values.\n\n%s",
+			identifier, plane.IntakeStatusName(targetStatus), yamlOut,
+		)), nil
+	}
+
+	if _, err := client.TransitionIntakeWorkItem(ctx, project.ID, issueUUID, body); err != nil {
+		return toolError(fmt.Sprintf("failed to transition intake work item %s to %s: %v", identifier, plane.IntakeStatusName(targetStatus), err)), nil
+	}
+
+	verified, err := verifyIntakeTransition(ctx, client, project, identifier, issueUUID, body)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+
+	verified.ResolvedIdentifier = identifier
+	if verified.UnderlyingIssue() == nil {
+		verified.Issue = matched.Issue
+		verified.IssueDetail = matched.IssueDetail
+	}
+	if err := annotateIntakeItem(ctx, verified, project, client); err != nil {
+		return toolError(err.Error()), nil
+	}
+	verified.ResolvedIdentifier = identifier
+
+	yamlOut, err := formatter.FormatIntakeWorkItemsYAML(ctx, []plane.IntakeWorkItem{*verified})
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to format intake work item %s: %v", identifier, err)), nil
+	}
+	return toolText(yamlOut), nil
+}
+
+// acceptIntakeWorkItem implements the accept_intake_work_item tool logic.
+func acceptIntakeWorkItem(ctx context.Context, args AcceptIntakeWorkItemArgs, client planeClient, resolver planeResolver, formatter planeFormatter) (*mcp.CallToolResult, error) {
+	return executeIntakeTransition(ctx, args.Identifier, plane.IntakeStatusAccepted, nil, client, resolver, formatter)
+}
+
+// declineIntakeWorkItem implements the decline_intake_work_item tool logic.
+// The optional reason is recorded as a comment on the underlying work item
+// because the Intake PATCH endpoint has no reason field.
+func declineIntakeWorkItem(ctx context.Context, args DeclineIntakeWorkItemArgs, client planeClient, resolver planeResolver, formatter planeFormatter) (*mcp.CallToolResult, error) {
+	preflight := func(_ map[string]any, project *plane.Project, _ *plane.IntakeWorkItem, issueUUID string) error {
+		reason := strings.TrimSpace(coalesceString(args.Reason))
+		if reason == "" {
+			return nil
+		}
+		comment := fmt.Sprintf("Declined via decline_intake_work_item: %s", reason)
+		if err := client.CreateWorkItemComment(ctx, project.ID, issueUUID, comment); err != nil {
+			return fmt.Errorf("failed to record the decline reason as a comment on %s: %v; the record was NOT declined", args.Identifier, err)
+		}
+		return nil
+	}
+	return executeIntakeTransition(ctx, args.Identifier, plane.IntakeStatusDeclined, preflight, client, resolver, formatter)
+}
+
+// coalesceString returns the pointed-to string or "" when nil.
+func coalesceString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+// parseSnoozedTill validates an RFC3339 snooze deadline and rejects timestamps
+// that are already expired: Plane CE hides expired-snoozed records from both
+// list and detail routes, so creating one would strand it beyond tool reach.
+func parseSnoozedTill(input string) (time.Time, error) {
+	deadline, err := time.Parse(time.RFC3339, strings.TrimSpace(input))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid snoozed_till %q: must be an RFC3339 timestamp (e.g. 2026-08-29T20:42:39Z)", input)
+	}
+	if !deadline.After(time.Now()) {
+		return time.Time{}, fmt.Errorf("expired snoozed_till %s: use a future timestamp; Plane hides expired snoozed records from the API entirely", deadline.Format(time.RFC3339))
+	}
+	return deadline, nil
+}
+
+// snoozeIntakeWorkItem implements the snooze_intake_work_item tool logic.
+func snoozeIntakeWorkItem(ctx context.Context, args SnoozeIntakeWorkItemArgs, client planeClient, resolver planeResolver, formatter planeFormatter) (*mcp.CallToolResult, error) {
+	deadline, err := parseSnoozedTill(args.SnoozedTill)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	preflight := func(body map[string]any, _ *plane.Project, _ *plane.IntakeWorkItem, _ string) error {
+		body["snoozed_till"] = deadline.UTC().Format(time.RFC3339)
+		return nil
+	}
+	return executeIntakeTransition(ctx, args.Identifier, plane.IntakeStatusSnoozed, preflight, client, resolver, formatter)
+}
+
+// markIntakeDuplicate implements the mark_intake_duplicate tool logic. The
+// canonical target is resolved from its project-prefixed identifier to its
+// underlying issue UUID and is never modified.
+func markIntakeDuplicate(ctx context.Context, args MarkIntakeDuplicateArgs, client planeClient, resolver planeResolver, formatter planeFormatter) (*mcp.CallToolResult, error) {
+	preflight := func(body map[string]any, project *plane.Project, matched *plane.IntakeWorkItem, issueUUID string) error {
+		_, targetSequenceID, err := parseIdentifier(args.DuplicateTo)
+		if err != nil {
+			return fmt.Errorf("invalid duplicate_to: %v", err)
+		}
+
+		target, err := client.GetWorkItemByIdentifier(ctx, project.Identifier, targetSequenceID)
+		if err != nil {
+			if isNotFoundError(err) {
+				return fmt.Errorf("duplicate target %s was not found in project %s; provide an existing canonical work item", args.DuplicateTo, project.Identifier)
+			}
+			return fmt.Errorf("failed to resolve duplicate target %s: %v", args.DuplicateTo, err)
+		}
+		if target == nil || target.ID == "" {
+			return fmt.Errorf("duplicate target %s resolved to an empty work item; provide an existing canonical work item", args.DuplicateTo)
+		}
+		if target.ID == issueUUID {
+			return fmt.Errorf("cannot mark intake work item %s as a duplicate of itself", args.Identifier)
+		}
+
+		body["duplicate_to"] = target.ID
+		return nil
+	}
+	return executeIntakeTransition(ctx, args.Identifier, plane.IntakeStatusDuplicate, preflight, client, resolver, formatter)
 }
 
 // listComments implements the list_comments tool logic.
@@ -2595,6 +2864,47 @@ func getIntakeWorkItemInputSchema() *jsonschema.Schema {
 	return schema
 }
 
+func acceptIntakeWorkItemInputSchema() *jsonschema.Schema {
+	schema, err := jsonschema.For[AcceptIntakeWorkItemArgs](nil)
+	if err != nil {
+		panic(fmt.Sprintf("accept_intake_work_item: failed to build input schema: %v", err))
+	}
+	return schema
+}
+
+func declineIntakeWorkItemInputSchema() *jsonschema.Schema {
+	schema, err := jsonschema.For[DeclineIntakeWorkItemArgs](nil)
+	if err != nil {
+		panic(fmt.Sprintf("decline_intake_work_item: failed to build input schema: %v", err))
+	}
+	if reason, ok := schema.Properties["reason"]; ok {
+		reason.Description = "Optional reason recorded as a comment on the underlying work item; the Intake endpoint has no reason field."
+	}
+	return schema
+}
+
+func snoozeIntakeWorkItemInputSchema() *jsonschema.Schema {
+	schema, err := jsonschema.For[SnoozeIntakeWorkItemArgs](nil)
+	if err != nil {
+		panic(fmt.Sprintf("snooze_intake_work_item: failed to build input schema: %v", err))
+	}
+	if till, ok := schema.Properties["snoozed_till"]; ok {
+		till.Description = "RFC3339 deadline (e.g. 2026-08-29T20:42:39Z). Past timestamps are rejected because Plane hides expired snoozed records from the API entirely."
+	}
+	return schema
+}
+
+func markIntakeDuplicateInputSchema() *jsonschema.Schema {
+	schema, err := jsonschema.For[MarkIntakeDuplicateArgs](nil)
+	if err != nil {
+		panic(fmt.Sprintf("mark_intake_duplicate: failed to build input schema: %v", err))
+	}
+	if dup, ok := schema.Properties["duplicate_to"]; ok {
+		dup.Description = "Project-prefixed identifier of the existing canonical work item (e.g. ASBX-12). The target is never modified."
+	}
+	return schema
+}
+
 // ---------------------------------------------------------------------------
 // Register — wires up all tools to the MCP server
 // ---------------------------------------------------------------------------
@@ -2780,6 +3090,54 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args GetIntakeWorkItemArgs) (*mcp.CallToolResult, any, error) {
 			result, err := getIntakeWorkItem(ctx, args, client, resolver, formatter)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("accept_intake_work_item", plannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "accept_intake_work_item",
+			Description: "Accept a Plane Intake idea by its project-prefixed identifier (e.g. ASBX-10). Moves the underlying work item out of Triage via the project default state. Verifies the transition actually applied because Plane returns HTTP 200 even when permissions or configuration block it.",
+			InputSchema: acceptIntakeWorkItemInputSchema(),
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &falsePtr, IdempotentHint: true, OpenWorldHint: &falseOW},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args AcceptIntakeWorkItemArgs) (*mcp.CallToolResult, any, error) {
+			result, err := acceptIntakeWorkItem(ctx, args, client, resolver, formatter)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("decline_intake_work_item", plannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "decline_intake_work_item",
+			Description: "Decline a Plane Intake idea by its project-prefixed identifier. The optional reason is recorded as a comment on the underlying work item. Verifies the transition actually applied (Plane returns HTTP 200 no-ops on insufficient permissions).",
+			InputSchema: declineIntakeWorkItemInputSchema(),
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &falsePtr, IdempotentHint: true, OpenWorldHint: &falseOW},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args DeclineIntakeWorkItemArgs) (*mcp.CallToolResult, any, error) {
+			result, err := declineIntakeWorkItem(ctx, args, client, resolver, formatter)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("snooze_intake_work_item", plannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "snooze_intake_work_item",
+			Description: "Snooze a Plane Intake idea until an RFC3339 timestamp. Past timestamps are rejected because Plane hides expired snoozed records from the API entirely. Verifies the snooze deadline was stored.",
+			InputSchema: snoozeIntakeWorkItemInputSchema(),
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &falsePtr, IdempotentHint: true, OpenWorldHint: &falseOW},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args SnoozeIntakeWorkItemArgs) (*mcp.CallToolResult, any, error) {
+			result, err := snoozeIntakeWorkItem(ctx, args, client, resolver, formatter)
+			return result, nil, err
+		})
+	}
+
+	if shouldRegister("mark_intake_duplicate", plannerFull, cfg) {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "mark_intake_duplicate",
+			Description: "Mark a Plane Intake idea as a duplicate of an existing canonical work item identified by its project-prefixed identifier. Resolves the target to its issue UUID; the target itself is never modified. Verifies the duplicate_to value was stored.",
+			InputSchema: markIntakeDuplicateInputSchema(),
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &falsePtr, IdempotentHint: true, OpenWorldHint: &falseOW},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, args MarkIntakeDuplicateArgs) (*mcp.CallToolResult, any, error) {
+			result, err := markIntakeDuplicate(ctx, args, client, resolver, formatter)
 			return result, nil, err
 		})
 	}

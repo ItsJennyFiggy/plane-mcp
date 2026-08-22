@@ -553,6 +553,7 @@ type mockClient struct {
 	getWorkItemByIdentifierFn func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error)
 	listIntakeWorkItemsFn     func(ctx context.Context, projectID string) ([]plane.IntakeWorkItem, error)
 	getIntakeWorkItemFn       func(ctx context.Context, projectID, issueID string) (*plane.IntakeWorkItem, error)
+	transitionIntakeItemFn    func(ctx context.Context, projectID, issueID string, body map[string]any) (*plane.IntakeWorkItem, error)
 	listWorkItemsFn           func(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error)
 	searchWorkItemsFn         func(ctx context.Context, params map[string]string) ([]plane.SearchWorkItemResult, error)
 	createWorkItemFn          func(ctx context.Context, projectID string, body map[string]any) (*plane.WorkItem, error)
@@ -585,6 +586,9 @@ func (m *mockClient) ListIntakeWorkItems(ctx context.Context, projectID string) 
 }
 func (m *mockClient) GetIntakeWorkItem(ctx context.Context, projectID, issueID string) (*plane.IntakeWorkItem, error) {
 	return m.getIntakeWorkItemFn(ctx, projectID, issueID)
+}
+func (m *mockClient) TransitionIntakeWorkItem(ctx context.Context, projectID, issueID string, body map[string]any) (*plane.IntakeWorkItem, error) {
+	return m.transitionIntakeItemFn(ctx, projectID, issueID, body)
 }
 func (m *mockClient) ListWorkItems(ctx context.Context, projectID string, params map[string]string) ([]plane.WorkItem, error) {
 	return m.listWorkItemsFn(ctx, projectID, params)

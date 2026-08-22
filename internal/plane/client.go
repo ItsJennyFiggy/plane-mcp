@@ -107,6 +107,7 @@ type State struct {
 	Group    string  `json:"group"`
 	Color    string  `json:"color"`
 	Sequence float64 `json:"sequence"`
+	Default  bool    `json:"default"`
 }
 
 // Label model
@@ -311,6 +312,26 @@ func (e *APIError) Error() string {
 func IsNotFoundError(err error) bool {
 	var apiErr *APIError
 	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
+}
+
+// TransitionNotAppliedError reports a 2xx PATCH response that did not apply
+// the requested Intake transition. Plane returns HTTP 200 for permission
+// no-ops and configuration failures instead of an error status, so callers
+// must verify semantic state after every mutation. The error carries the
+// observed status and likely causes.
+type TransitionNotAppliedError struct {
+	Identifier string   // project-prefixed work-item identifier (e.g. ASBX-10)
+	IssueUUID  string   // underlying issue UUID used by the intake detail route
+	Requested  string   // canonical status name that was requested
+	Observed   string   // canonical status name observed after re-read
+	Causes     []string // likely causes, most likely first
+}
+
+func (e *TransitionNotAppliedError) Error() string {
+	return fmt.Sprintf(
+		"transition_not_applied: intake record %s still has status %q after requesting %q (HTTP 2xx but Plane did not apply the transition); likely causes: %s",
+		e.Identifier, e.Observed, e.Requested, strings.Join(e.Causes, "; "),
+	)
 }
 
 // CommentActorDetail represents the actor (user) that authored a comment.
@@ -698,6 +719,22 @@ func (c *Client) GetIntakeWorkItem(ctx context.Context, projectID, issueID strin
 	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/intake-issues/%s/", c.WorkspaceSlug, projectID, issueID)
 	var item IntakeWorkItem
 	if err := c.request(ctx, "GET", path, map[string]string{"expand": "issue"}, nil, &item); err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
+// TransitionIntakeWorkItem PATCHes an intake record by its underlying issue
+// UUID. This is the only supported mutation route for Intake records; the
+// /status/ subroute is invalid on the PAT API. Body fields follow the intake
+// serializer (status, snoozed_till, duplicate_to). Callers must verify the
+// resulting semantic state because insufficient project roles yield HTTP 200
+// without applying the transition.
+// Path: PATCH /api/v1/workspaces/{slug}/projects/{projectID}/intake-issues/{issueID}/
+func (c *Client) TransitionIntakeWorkItem(ctx context.Context, projectID, issueID string, body map[string]any) (*IntakeWorkItem, error) {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/intake-issues/%s/", c.WorkspaceSlug, projectID, issueID)
+	var item IntakeWorkItem
+	if err := c.request(ctx, "PATCH", path, map[string]string{"expand": "issue"}, body, &item); err != nil {
 		return nil, err
 	}
 	return &item, nil
