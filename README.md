@@ -235,9 +235,9 @@ Intake triage details:
 
 * All four actions PATCH `/api/v1/workspaces/{slug}/projects/{pid}/intake-issues/{underlying_issue_uuid}/` — the only valid mutation route. Identifiers are resolved to underlying issue UUIDs internally.
 * **Verified transitions:** Plane returns HTTP 200 even when it does not apply a change (e.g. insufficient project role). Every action re-reads the record after writing and fails with a typed `transition_not_applied` error listing likely causes — permission shortfalls for all actions, plus a missing project default state for acceptance. Results include canonical status, snooze deadline, duplicate target, resulting issue state, and normal-work-item visibility.
-* Actions are idempotent: re-running one against a record already in the requested state reports `No change needed` without another write. Re-snoozing with a later deadline does write again.
+* Actions are idempotent: re-running one against a record already in the requested state reports `No change needed` without any writes — including decline-reason comments, which only post when an actual transition follows.
 * `snooze_intake_work_item` requires a future RFC3339 timestamp. Past deadlines are rejected because Plane CE hides expired-snoozed records from both list and detail routes — such records would become unreachable through this API entirely.
-* `mark_intake_duplicate` resolves the canonical target's project-prefixed identifier to its issue UUID, rejects self-duplicates and missing targets, and never modifies the target.
+* `mark_intake_duplicate` resolves the canonical target through the target identifier's own project prefix (e.g. `CORE-12` is looked up in project CORE), rejects self-duplicates and missing targets, and never modifies the target.
 
 ### Progress & comments
 

@@ -330,6 +330,35 @@ func TestDeclineIntakeWorkItem(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("reason is not re-posted on an already-declined record", func(t *testing.T) {
+		declined := newIntakeTriageRecord(plane.IntakeStatusDeclined)
+		patchCalls := 0
+		commentCalls := 0
+		client := &mockClient{
+			listIntakeWorkItemsFn: baseIntakeListFn(declined),
+			createWorkItemCommentFn: func(ctx context.Context, projectID, itemID, comment string) error {
+				commentCalls++
+				return nil
+			},
+			transitionIntakeItemFn: func(ctx context.Context, projectID, issueID string, body map[string]any) (*plane.IntakeWorkItem, error) {
+				patchCalls++
+				return nil, errors.New("must not be called")
+			},
+			getWorkItemByIdentifierFn: visibleTargetFn(),
+		}
+
+		result, err := declineIntakeWorkItem(context.Background(), DeclineIntakeWorkItemArgs{Identifier: "ASBX-10", Reason: strPtr("Already handled")}, client, resolver, newIntakeTriageFormatter(nil))
+		if err != nil || result.IsError {
+			t.Fatalf("idempotent decline failed: %v %+v", err, result)
+		}
+		if patchCalls != 0 || commentCalls != 0 {
+			t.Errorf("expected no writes for already-declined record, got patch=%d comment=%d", patchCalls, commentCalls)
+		}
+		if !strings.Contains(result.Content[0].(*mcp.TextContent).Text, "No change needed") {
+			t.Error("expected no-change notice")
+		}
+	})
 }
 
 func TestSnoozeIntakeWorkItem(t *testing.T) {
@@ -531,6 +560,58 @@ func TestMarkIntakeDuplicate(t *testing.T) {
 		}
 		if len(formatted) != 1 || formatted[0].DuplicateTo == nil || *formatted[0].DuplicateTo != "issue-target" || formatted[0].Status != plane.IntakeStatusDuplicate {
 			t.Fatalf("expected verified duplicate in output, got %+v", formatted)
+		}
+	})
+
+	t.Run("cross-project target resolves through its own project prefix", func(t *testing.T) {
+		applied := ""
+		var patchedUUIDs []string
+		var lookupPrefixes []string
+		client := &mockClient{
+			listIntakeWorkItemsFn: baseIntakeListFn(record),
+			getWorkItemByIdentifierFn: func(ctx context.Context, projectIdentifier string, sequenceID int) (*plane.WorkItem, error) {
+				if sequenceID == 10 {
+					return &plane.WorkItem{ID: "issue-10", SequenceID: sequenceID}, nil
+				}
+				lookupPrefixes = append(lookupPrefixes, projectIdentifier)
+				return &plane.WorkItem{ID: "issue-core-12", SequenceID: sequenceID}, nil
+			},
+			transitionIntakeItemFn: func(ctx context.Context, projectID, issueID string, body map[string]any) (*plane.IntakeWorkItem, error) {
+				patchedUUIDs = append(patchedUUIDs, issueID)
+				marked := *record
+				marked.Status = plane.IntakeStatusDuplicate
+				applied = body["duplicate_to"].(string)
+				marked.DuplicateTo = strPtr(applied)
+				return &marked, nil
+			},
+			getIntakeWorkItemFn: func(ctx context.Context, projectID, issueID string) (*plane.IntakeWorkItem, error) {
+				marked := *record
+				marked.Status = plane.IntakeStatusDuplicate
+				marked.DuplicateTo = strPtr("issue-core-12")
+				return &marked, nil
+			},
+		}
+		multiResolver := &mockResolver{resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			switch input {
+			case "CORE":
+				return &plane.Project{ID: "project-core", Identifier: "CORE"}, nil
+			default:
+				return &plane.Project{ID: "project-1", Identifier: "ASBX"}, nil
+			}
+		}}
+
+		result, err := markIntakeDuplicate(context.Background(), MarkIntakeDuplicateArgs{Identifier: "ASBX-10", DuplicateTo: "CORE-12"}, client, multiResolver, newIntakeTriageFormatter(nil))
+		if err != nil || result.IsError {
+			t.Fatalf("cross-project duplicate failed: %v %+v", err, result)
+		}
+		if len(lookupPrefixes) != 1 || lookupPrefixes[0] != "CORE" {
+			t.Errorf("target must be looked up in project CORE, lookups: %v", lookupPrefixes)
+		}
+		if applied != "issue-core-12" {
+			t.Errorf("expected duplicate_to=issue-core-12, got %q", applied)
+		}
+		if len(patchedUUIDs) != 1 || patchedUUIDs[0] != "issue-10" {
+			t.Errorf("only the source record may be patched, patched: %v", patchedUUIDs)
 		}
 	})
 

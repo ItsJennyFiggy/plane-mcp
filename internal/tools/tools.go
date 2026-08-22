@@ -1034,15 +1034,19 @@ func mismatchedIntakeExtras(after *plane.IntakeWorkItem, body map[string]any) []
 }
 
 // executeIntakeTransition runs the shared triage pipeline: identifier
-// resolution, idempotent short-circuit, preflight hook, PATCH via the
-// underlying issue UUID, mandatory read-after-write verification, visibility
-// annotation, and YAML formatting. The preflight hook may mutate body to add
-// action-specific fields (e.g. snoozed_till) before the PATCH is sent.
+// resolution, side-effect-free body building, the idempotent short-circuit,
+// pre-write side effects (only when a write will actually happen), PATCH via
+// the underlying issue UUID, mandatory read-after-write verification,
+// visibility annotation, and YAML formatting. buildBody may add
+// action-specific fields (e.g. snoozed_till, duplicate_to) to the body;
+// beforeWrite performs actions that must not fire on an idempotent no-op
+// (e.g. decline reason comments).
 func executeIntakeTransition(
 	ctx context.Context,
 	identifier string,
 	targetStatus int,
-	preflight func(body map[string]any, project *plane.Project, matched *plane.IntakeWorkItem, issueUUID string) error,
+	buildBody func(body map[string]any, project *plane.Project, matched *plane.IntakeWorkItem, issueUUID string) error,
+	beforeWrite func(project *plane.Project, matched *plane.IntakeWorkItem, issueUUID string) error,
 	client planeClient,
 	resolver planeResolver,
 	formatter planeFormatter,
@@ -1058,14 +1062,14 @@ func executeIntakeTransition(
 	}
 
 	body := map[string]any{"status": targetStatus}
-	if preflight != nil {
-		if err := preflight(body, project, matched, issueUUID); err != nil {
+	if buildBody != nil {
+		if err := buildBody(body, project, matched, issueUUID); err != nil {
 			return toolError(err.Error()), nil
 		}
 	}
 
-	// Idempotent short-circuit: skip the PATCH when the record already carries
-	// the requested semantic state.
+	// Idempotent short-circuit: skip all writes when the record already
+	// carries the requested semantic state.
 	if matched.Status == targetStatus && len(mismatchedIntakeExtras(matched, body)) == 0 {
 		matched.ResolvedIdentifier = identifier
 		if err := annotateIntakeItem(ctx, matched, project, client); err != nil {
@@ -1079,6 +1083,12 @@ func executeIntakeTransition(
 			"No change needed: intake work item %s already has status %q with the requested values.\n\n%s",
 			identifier, plane.IntakeStatusName(targetStatus), yamlOut,
 		)), nil
+	}
+
+	if beforeWrite != nil {
+		if err := beforeWrite(project, matched, issueUUID); err != nil {
+			return toolError(err.Error()), nil
+		}
 	}
 
 	if _, err := client.TransitionIntakeWorkItem(ctx, project.ID, issueUUID, body); err != nil {
@@ -1109,14 +1119,16 @@ func executeIntakeTransition(
 
 // acceptIntakeWorkItem implements the accept_intake_work_item tool logic.
 func acceptIntakeWorkItem(ctx context.Context, args AcceptIntakeWorkItemArgs, client planeClient, resolver planeResolver, formatter planeFormatter) (*mcp.CallToolResult, error) {
-	return executeIntakeTransition(ctx, args.Identifier, plane.IntakeStatusAccepted, nil, client, resolver, formatter)
+	return executeIntakeTransition(ctx, args.Identifier, plane.IntakeStatusAccepted, nil, nil, client, resolver, formatter)
 }
 
 // declineIntakeWorkItem implements the decline_intake_work_item tool logic.
 // The optional reason is recorded as a comment on the underlying work item
-// because the Intake PATCH endpoint has no reason field.
+// because the Intake PATCH endpoint has no reason field. The comment is a
+// pre-write side effect: it never fires when the action short-circuits
+// idempotently on an already-declined record.
 func declineIntakeWorkItem(ctx context.Context, args DeclineIntakeWorkItemArgs, client planeClient, resolver planeResolver, formatter planeFormatter) (*mcp.CallToolResult, error) {
-	preflight := func(_ map[string]any, project *plane.Project, _ *plane.IntakeWorkItem, issueUUID string) error {
+	beforeWrite := func(project *plane.Project, _ *plane.IntakeWorkItem, issueUUID string) error {
 		reason := strings.TrimSpace(coalesceString(args.Reason))
 		if reason == "" {
 			return nil
@@ -1127,7 +1139,7 @@ func declineIntakeWorkItem(ctx context.Context, args DeclineIntakeWorkItemArgs, 
 		}
 		return nil
 	}
-	return executeIntakeTransition(ctx, args.Identifier, plane.IntakeStatusDeclined, preflight, client, resolver, formatter)
+	return executeIntakeTransition(ctx, args.Identifier, plane.IntakeStatusDeclined, nil, beforeWrite, client, resolver, formatter)
 }
 
 // coalesceString returns the pointed-to string or "" when nil.
@@ -1162,37 +1174,43 @@ func snoozeIntakeWorkItem(ctx context.Context, args SnoozeIntakeWorkItemArgs, cl
 		body["snoozed_till"] = deadline.UTC().Format(time.RFC3339)
 		return nil
 	}
-	return executeIntakeTransition(ctx, args.Identifier, plane.IntakeStatusSnoozed, preflight, client, resolver, formatter)
+	return executeIntakeTransition(ctx, args.Identifier, plane.IntakeStatusSnoozed, preflight, nil, client, resolver, formatter)
 }
 
 // markIntakeDuplicate implements the mark_intake_duplicate tool logic. The
-// canonical target is resolved from its project-prefixed identifier to its
-// underlying issue UUID and is never modified.
+// canonical target is resolved from its own project-prefixed identifier — the
+// prefix selects the target project — to its underlying issue UUID; the
+// target itself is never modified.
 func markIntakeDuplicate(ctx context.Context, args MarkIntakeDuplicateArgs, client planeClient, resolver planeResolver, formatter planeFormatter) (*mcp.CallToolResult, error) {
-	preflight := func(body map[string]any, project *plane.Project, matched *plane.IntakeWorkItem, issueUUID string) error {
-		_, targetSequenceID, err := parseIdentifier(args.DuplicateTo)
+	buildBody := func(body map[string]any, _ *plane.Project, matched *plane.IntakeWorkItem, _ string) error {
+		targetProjectIdentifier, targetSequenceID, err := parseIdentifier(args.DuplicateTo)
 		if err != nil {
 			return fmt.Errorf("invalid duplicate_to: %v", err)
 		}
 
-		target, err := client.GetWorkItemByIdentifier(ctx, project.Identifier, targetSequenceID)
+		targetProject, err := resolver.ResolveProject(ctx, targetProjectIdentifier)
+		if err != nil {
+			return fmt.Errorf("failed to resolve duplicate target project %q: %v", targetProjectIdentifier, err)
+		}
+
+		target, err := client.GetWorkItemByIdentifier(ctx, targetProject.Identifier, targetSequenceID)
 		if err != nil {
 			if isNotFoundError(err) {
-				return fmt.Errorf("duplicate target %s was not found in project %s; provide an existing canonical work item", args.DuplicateTo, project.Identifier)
+				return fmt.Errorf("duplicate target %s was not found in project %s; provide an existing canonical work item", args.DuplicateTo, targetProject.Identifier)
 			}
 			return fmt.Errorf("failed to resolve duplicate target %s: %v", args.DuplicateTo, err)
 		}
 		if target == nil || target.ID == "" {
 			return fmt.Errorf("duplicate target %s resolved to an empty work item; provide an existing canonical work item", args.DuplicateTo)
 		}
-		if target.ID == issueUUID {
+		if target.ID == matched.UnderlyingIssueID() {
 			return fmt.Errorf("cannot mark intake work item %s as a duplicate of itself", args.Identifier)
 		}
 
 		body["duplicate_to"] = target.ID
 		return nil
 	}
-	return executeIntakeTransition(ctx, args.Identifier, plane.IntakeStatusDuplicate, preflight, client, resolver, formatter)
+	return executeIntakeTransition(ctx, args.Identifier, plane.IntakeStatusDuplicate, buildBody, nil, client, resolver, formatter)
 }
 
 // listComments implements the list_comments tool logic.
