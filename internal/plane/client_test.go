@@ -642,7 +642,7 @@ func TestEnrichmentNotAppliedErrorMessage(t *testing.T) {
 		IgnoredFields: []string{"name", "priority"},
 		Causes:        []string{"cause one", "cause two"},
 	}
-	want := "enrichment_not_applied: intake record ASBX-10 does not reflect the requested update (HTTP 2xx but Plane did not store: name, priority); likely causes: cause one; cause two"
+	want := "enrichment_not_applied: intake record ASBX-10 does not reflect the requested update (HTTP 2xx but Plane did not store fields name, priority); likely causes: cause one; cause two"
 	if err.Error() != want {
 		t.Errorf("Error() = %q, want %q", err.Error(), want)
 	}
@@ -653,8 +653,20 @@ func TestEnrichmentNotAppliedErrorMessage(t *testing.T) {
 		StatusChanged: true,
 		Causes:        []string{"status drifted"},
 	}
-	if !strings.Contains(statusErr.Error(), "enrichment_not_applied: intake record ASBX-11") {
-		t.Errorf("status-change variant missing header: %q", statusErr.Error())
+	statusWant := "enrichment_not_applied: intake record ASBX-11 does not reflect the requested update (HTTP 2xx but Plane did not store the triage status changed unexpectedly); likely causes: status drifted"
+	if statusErr.Error() != statusWant {
+		t.Errorf("status-change variant Error() = %q, want %q", statusErr.Error(), statusWant)
+	}
+
+	combined := &EnrichmentNotAppliedError{
+		Identifier:    "ASBX-12",
+		IssueUUID:     "issue-12",
+		IgnoredFields: []string{"description"},
+		StatusChanged: true,
+		Causes:        []string{"cause"},
+	}
+	if !strings.Contains(combined.Error(), "fields description") || !strings.Contains(combined.Error(), "the triage status changed unexpectedly") {
+		t.Errorf("combined variant missing clauses: %q", combined.Error())
 	}
 }
 

@@ -348,9 +348,19 @@ type EnrichmentNotAppliedError struct {
 }
 
 func (e *EnrichmentNotAppliedError) Error() string {
+	var unstored []string
+	if len(e.IgnoredFields) > 0 {
+		unstored = append(unstored, fmt.Sprintf("fields %s", strings.Join(e.IgnoredFields, ", ")))
+	}
+	if e.StatusChanged {
+		unstored = append(unstored, "the triage status changed unexpectedly")
+	}
+	if len(unstored) == 0 {
+		unstored = append(unstored, "requested values")
+	}
 	return fmt.Sprintf(
-		"enrichment_not_applied: intake record %s does not reflect the requested update (HTTP 2xx but Plane did not store: %s); likely causes: %s",
-		e.Identifier, strings.Join(e.IgnoredFields, ", "), strings.Join(e.Causes, "; "),
+		"enrichment_not_applied: intake record %s does not reflect the requested update (HTTP 2xx but Plane did not store %s); likely causes: %s",
+		e.Identifier, strings.Join(unstored, "; "), strings.Join(e.Causes, "; "),
 	)
 }
 

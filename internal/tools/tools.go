@@ -1256,13 +1256,19 @@ func normalizeIntakePriority(input string) (string, error) {
 }
 
 // deriveIntakeIdentifier builds the canonical project-prefixed identifier for
-// an intake record's underlying issue using the resolved project.
+// an intake record's underlying issue using the resolved project. The result
+// must parse as a canonical PROJECT-N identifier; anything else returns ""
+// so callers fail closed instead of emitting unusable identifiers.
 func deriveIntakeIdentifier(project *plane.Project, item *plane.IntakeWorkItem) string {
 	issue := item.UnderlyingIssue()
 	if project == nil || issue == nil || issue.SequenceID <= 0 {
 		return ""
 	}
-	return fmt.Sprintf("%s-%d", project.Identifier, issue.SequenceID)
+	identifier := fmt.Sprintf("%s-%d", strings.TrimSpace(project.Identifier), issue.SequenceID)
+	if _, _, err := parseIdentifier(identifier); err != nil {
+		return ""
+	}
+	return identifier
 }
 
 // reconcileCreatedIntake fills in expanded issue data missing from the POST
@@ -1461,7 +1467,11 @@ func updateIntakeWorkItem(ctx context.Context, args UpdateIntakeWorkItemArgs, cl
 	}
 
 	// Enrichment is restricted to pending records awaiting disposition; a
-	// disposed record must be re-opened through triage instead.
+	// disposed record must be re-opened through triage instead. Plane's API
+	// provides no conditional-write primitive, so this gate cannot be made
+	// atomic with the write below; a concurrent triage transition between
+	// this check and the PATCH is detected by the mandatory post-write
+	// verification and reported as an error rather than silently accepted.
 	if currentRec.Status != plane.IntakeStatusPending {
 		return toolError(fmt.Sprintf(
 			"intake work item %s has status %q; enrichment is restricted to pending Intake items awaiting disposition",
@@ -1469,30 +1479,9 @@ func updateIntakeWorkItem(ctx context.Context, args UpdateIntakeWorkItemArgs, cl
 		)), nil
 	}
 
-	// Idempotent short-circuit: skip all writes when the freshly re-read
-	// record already carries every requested value.
-	current := currentRec.UnderlyingIssue()
-	unchanged := true
-	if want, ok := fields["name"].(string); ok && (current == nil || current.Name != want) {
-		unchanged = false
-	}
-	if want, ok := fields["priority"].(string); ok && (current == nil || current.Priority != want) {
-		unchanged = false
-	}
-	if want, ok := fields["description_html"].(string); ok && (current == nil || current.DescriptionHTML != want) {
-		unchanged = false
-	}
-	if unchanged {
-		currentRec.ResolvedIdentifier = args.Identifier
-		yamlOut, err := formatter.FormatIntakeWorkItemsYAML(ctx, []plane.IntakeWorkItem{*currentRec})
-		if err != nil {
-			return toolError(fmt.Sprintf("failed to format intake work item %s: %v", args.Identifier, err)), nil
-		}
-		return toolText(fmt.Sprintf(
-			"No change needed: intake work item %s already carries the requested values.\n\n%s",
-			args.Identifier, yamlOut,
-		)), nil
-	}
+	// Always issue the idempotent PATCH: every success path therefore flows
+	// through read-after-write verification, so no response can claim a
+	// verified outcome based on pre-write reads alone.
 
 	if _, err := client.TransitionIntakeWorkItem(ctx, project.ID, issueUUID, map[string]any{"issue": fields}); err != nil {
 		return toolError(fmt.Sprintf("failed to update intake work item %s: %v", args.Identifier, err)), nil
@@ -3523,7 +3512,7 @@ func registerWithDeps(server *mcp.Server, client planeClient, resolver planeReso
 	if shouldRegister("update_intake_work_item", plannerFull, cfg) {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "update_intake_work_item",
-			Description: "Enrich a pending Plane Intake idea by its project-prefixed identifier. Supported fields are name, description (Markdown converted to rich text), and priority. Every requested field is re-read after the write; unsupported or silently ignored fields are reported as errors rather than claimed successes.",
+			Description: "Enrich a pending Plane Intake idea by its project-prefixed identifier. Supported fields are name, description (Markdown converted to rich text), and priority. Every request is written idempotently and then re-read: unsupported or silently ignored fields are reported as errors rather than claimed successes. Pending-only is enforced at decision time — Plane has no conditional-write API, so a concurrent triage transition between the pre-write check and the write is detected and reported by post-write verification rather than prevented.",
 			InputSchema: updateIntakeWorkItemInputSchema(),
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &truePtr, IdempotentHint: true, OpenWorldHint: &falseOW},
 		}, func(ctx context.Context, req *mcp.CallToolRequest, args UpdateIntakeWorkItemArgs) (*mcp.CallToolResult, any, error) {

@@ -259,6 +259,81 @@ func TestCreateIntakeWorkItem(t *testing.T) {
 		}
 	})
 
+	t.Run("fails closed on empty or unusable creation responses", func(t *testing.T) {
+		cases := []struct {
+			name   string
+			record *plane.IntakeWorkItem
+			want   string
+		}{
+			{name: "nil creation response", record: nil, want: "Plane returned an empty response"},
+			{name: "empty intake record id", record: &plane.IntakeWorkItem{}, want: "Plane returned an empty response"},
+			{
+				// Reconciliation finds the new record but its issue carries
+				// no positive sequence: both identifiers can never be
+				// established, so the call must not serialize a success.
+				name: "reconciled record without usable sequence",
+				record: func() *plane.IntakeWorkItem {
+					return &plane.IntakeWorkItem{
+						ID:     "intake-11",
+						Status: plane.IntakeStatusPending,
+						Source: "IN_APP",
+						Issue:  plane.Expandable[plane.IntakeIssue]{ID: "issue-uuid-11"},
+					}
+				}(),
+				want: "could not derive the canonical identifier",
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				client := &mockClient{
+					createIntakeItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.IntakeWorkItem, error) {
+						return tc.record, nil
+					},
+					listIntakeWorkItemsFn: func(ctx context.Context, projectID string) ([]plane.IntakeWorkItem, error) {
+						if tc.record == nil {
+							return nil, nil
+						}
+						matched := *tc.record
+						matched.Issue = plane.Expandable[plane.IntakeIssue]{Val: &plane.IntakeIssue{
+							ID: "issue-uuid-11", Name: "Quick idea", SequenceID: 0,
+						}}
+						return []plane.IntakeWorkItem{matched}, nil
+					},
+				}
+
+				result, _ := createIntakeWorkItem(context.Background(), CreateIntakeWorkItemArgs{
+					Project: "ASBX", Name: "Quick idea",
+				}, client, resolver, realIntakeFormatter(nil))
+				if !result.IsError || !strings.Contains(resultText(t, result), tc.want) {
+					t.Fatalf("expected fail-closed error containing %q, got: %+v", tc.want, result)
+				}
+			})
+		}
+	})
+
+	t.Run("malformed project identifier cannot produce a pseudo-canonical identifier", func(t *testing.T) {
+		// A resolver returning an empty identifier would otherwise yield
+		// "-11"; the derived value must be rejected by the canonical parser.
+		badResolver := &mockResolver{resolveProjectFn: func(ctx context.Context, input string) (*plane.Project, error) {
+			return &plane.Project{ID: "project-1", Identifier: ""}, nil
+		}}
+		client := &mockClient{
+			createIntakeItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.IntakeWorkItem, error) {
+				return newCreatedIntakeRecord(), nil
+			},
+			listIntakeWorkItemsFn: func(ctx context.Context, projectID string) ([]plane.IntakeWorkItem, error) {
+				return []plane.IntakeWorkItem{*newCreatedIntakeRecord()}, nil
+			},
+		}
+
+		result, _ := createIntakeWorkItem(context.Background(), CreateIntakeWorkItemArgs{
+			Project: "ASBX", Name: "Quick idea",
+		}, client, badResolver, realIntakeFormatter(nil))
+		if !result.IsError || !strings.Contains(resultText(t, result), "could not derive the canonical identifier") {
+			t.Fatalf("expected malformed-prefix failure, got: %+v", result)
+		}
+	})
+
 	t.Run("empty name is rejected before any API call", func(t *testing.T) {
 		calls := 0
 		client := &mockClient{createIntakeItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.IntakeWorkItem, error) {
@@ -455,7 +530,7 @@ func TestUpdateIntakeWorkItem(t *testing.T) {
 					t.Fatal("expected MCP tool error for ignored enrichment")
 				}
 				text := resultText(t, result)
-				for _, want := range []string{"enrichment_not_applied", tc.wantTerm, "silently drops"} {
+				for _, want := range []string{"enrichment_not_applied", tc.wantTerm, "silently drops", "may be insufficient"} {
 					if !strings.Contains(text, want) {
 						t.Errorf("error text missing %q: %s", want, text)
 					}
@@ -550,47 +625,21 @@ func TestUpdateIntakeWorkItem(t *testing.T) {
 		}
 	})
 
-	t.Run("no-op decision uses the fresh detail read, not the stale queue list", func(t *testing.T) {
-		// The queue list claims the requested value is already stored; only
-		// the fresh detail read reveals it is not. The handler must PATCH.
-		current := newPendingRecord("Idea", "none")
-		patchCalls := 0
-		client := &mockClient{
-			listIntakeWorkItemsFn: baseIntakeListFn(newPendingRecord("Fresh name", "none")),
-			transitionIntakeItemFn: func(ctx context.Context, projectID, issueID string, body map[string]any) (*plane.IntakeWorkItem, error) {
-				patchCalls++
-				current.Issue.Val = &plane.IntakeIssue{
-					ID: "issue-10", SequenceID: 10, Name: "Fresh name", Priority: "none",
-				}
-				cp := *current
-				return &cp, nil
-			},
-			getIntakeWorkItemFn:       serveCurrent(current, nil),
-			getWorkItemByIdentifierFn: visibleTargetFn(),
-		}
-
-		name := "Fresh name"
-		result, err := updateIntakeWorkItem(context.Background(), UpdateIntakeWorkItemArgs{
-			Identifier: "ASBX-10", Name: &name,
-		}, client, resolver, realIntakeFormatter(nil))
-		if err != nil || result.IsError {
-			t.Fatalf("update failed: %v %+v", err, result)
-		}
-		if patchCalls != 1 {
-			t.Fatalf("expected the stale-list shortcut to be bypassed and one PATCH issued, got %d", patchCalls)
-		}
-	})
-
-	t.Run("idempotent no-op skips PATCH when the fresh read shows matching values", func(t *testing.T) {
+	t.Run("identical values are still written idempotently and verified", func(t *testing.T) {
+		// Every success must flow through write + read-after-write
+		// verification; no response may rely on pre-write reads alone.
 		current := newPendingRecord("Idea", "high")
 		patchCalls := 0
+		detailReads := 0
 		client := &mockClient{
 			listIntakeWorkItemsFn: baseIntakeListFn(newPendingRecord("Idea", "high")),
 			transitionIntakeItemFn: func(ctx context.Context, projectID, issueID string, body map[string]any) (*plane.IntakeWorkItem, error) {
 				patchCalls++
-				return nil, errors.New("must not be called")
+				cp := *current
+				return &cp, nil
 			},
-			getIntakeWorkItemFn: serveCurrent(current, nil),
+			getIntakeWorkItemFn:       serveCurrent(current, &detailReads),
+			getWorkItemByIdentifierFn: visibleTargetFn(),
 		}
 
 		name := "Idea"
@@ -601,11 +650,40 @@ func TestUpdateIntakeWorkItem(t *testing.T) {
 		if err != nil || result.IsError {
 			t.Fatalf("idempotent update failed: %v %+v", err, result)
 		}
-		if patchCalls != 0 {
-			t.Fatalf("expected no PATCH for matching values, got %d", patchCalls)
+		if patchCalls != 1 {
+			t.Fatalf("expected exactly one idempotent PATCH, got %d", patchCalls)
 		}
-		if !strings.Contains(resultText(t, result), "No change needed") {
-			t.Errorf("expected no-change notice, got: %s", resultText(t, result))
+		if detailReads != 2 {
+			t.Fatalf("expected freshness + verification reads, got %d", detailReads)
+		}
+	})
+
+	t.Run("pending gate uses the fresh detail read, not the stale queue list", func(t *testing.T) {
+		// The queue list claims the record is still pending; only the fresh
+		// detail read reveals it was concurrently disposed.
+		patchCalled := false
+		client := &mockClient{
+			listIntakeWorkItemsFn: baseIntakeListFn(newPendingRecord("Idea", "none")),
+			transitionIntakeItemFn: func(ctx context.Context, projectID, issueID string, body map[string]any) (*plane.IntakeWorkItem, error) {
+				patchCalled = true
+				return newPendingRecord("Idea", "none"), nil
+			},
+			getIntakeWorkItemFn: func(ctx context.Context, projectID, issueID string) (*plane.IntakeWorkItem, error) {
+				disposed := newPendingRecord("Idea", "none")
+				disposed.Status = plane.IntakeStatusAccepted
+				return disposed, nil
+			},
+		}
+
+		name := "Fresh name"
+		result, _ := updateIntakeWorkItem(context.Background(), UpdateIntakeWorkItemArgs{
+			Identifier: "ASBX-10", Name: &name,
+		}, client, resolver, realIntakeFormatter(nil))
+		if !result.IsError || !strings.Contains(resultText(t, result), `has status "accepted"`) {
+			t.Fatalf("expected disposed-record rejection from fresh read, got: %+v", result)
+		}
+		if patchCalled {
+			t.Fatal("enrichment PATCHed a concurrently disposed record")
 		}
 	})
 
@@ -761,29 +839,99 @@ func TestRegisterWithDeps_IntakeSubmissionTools(t *testing.T) {
 		})
 	}
 
-	t.Run("annotations match the submission/enrichment contracts", func(t *testing.T) {
+	// rawSchema converts the wire-format tool schema (a JSON-shaped map)
+	// into accessor helpers for contract assertions.
+	rawSchema := func(t *testing.T, input any) (props map[string]map[string]any, required []string) {
+		t.Helper()
+		m, ok := input.(map[string]any)
+		if !ok {
+			t.Fatalf("input schema unexpected type: %T", input)
+		}
+		if p, ok := m["properties"].(map[string]any); ok {
+			props = map[string]map[string]any{}
+			for name, v := range p {
+				pm, ok := v.(map[string]any)
+				if !ok {
+					t.Fatalf("property %q unexpected type: %T", name, v)
+				}
+				props[name] = pm
+			}
+		}
+		if r, ok := m["required"].([]any); ok {
+			for _, v := range r {
+				if s, ok := v.(string); ok {
+					required = append(required, s)
+				}
+			}
+		}
+		return props, required
+	}
+
+	t.Run("annotations and schemas lock the submission/enrichment contracts", func(t *testing.T) {
 		tools := listTools(t, "full")
 
 		create := tools["create_intake_work_item"]
 		if create == nil {
 			t.Fatal("create_intake_work_item missing under full profile")
 		}
-		if create.Annotations == nil || create.Annotations.ReadOnlyHint || create.Annotations.IdempotentHint {
-			t.Errorf("create annotations must be non-readonly, non-idempotent: %+v", create.Annotations)
+		if create.Annotations == nil ||
+			create.Annotations.ReadOnlyHint ||
+			create.Annotations.DestructiveHint == nil || *create.Annotations.DestructiveHint ||
+			create.Annotations.IdempotentHint ||
+			create.Annotations.OpenWorldHint == nil || *create.Annotations.OpenWorldHint {
+			t.Errorf("create annotations must be read/write, non-destructive, non-idempotent, closed-world: %+v", create.Annotations)
 		}
-		if create.InputSchema == nil {
-			t.Error("create input schema missing")
+		props, required := rawSchema(t, create.InputSchema)
+		for _, prop := range []string{"project", "name", "description", "priority"} {
+			if _, ok := props[prop]; !ok {
+				t.Errorf("create schema missing property %q (have %v)", prop, props)
+			}
+		}
+		if len(required) != 2 || required[0] != "project" || required[1] != "name" {
+			t.Errorf("create required = %v, want [project name]", required)
+		}
+		priority := props["priority"]
+		enumValues, _ := priority["enum"].([]any)
+		if len(enumValues) != 5 {
+			t.Fatalf("create priority enum missing or incomplete: %+v", priority)
+		}
+		for _, want := range []any{"urgent", "high", "medium", "low", "none"} {
+			found := false
+			for _, v := range enumValues {
+				if v == want {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("create priority enum missing %v: %v", want, enumValues)
+			}
+		}
+		if got := fmt.Sprint(priority["default"]); got != "none" {
+			t.Errorf("create priority default = %v, want none", priority["default"])
 		}
 
 		update := tools["update_intake_work_item"]
 		if update == nil {
 			t.Fatal("update_intake_work_item missing under full profile")
 		}
-		if update.Annotations == nil || !update.Annotations.IdempotentHint {
-			t.Errorf("update annotations must be idempotent: %+v", update.Annotations)
+		if update.Annotations == nil ||
+			update.Annotations.ReadOnlyHint ||
+			update.Annotations.DestructiveHint == nil || !*update.Annotations.DestructiveHint ||
+			!update.Annotations.IdempotentHint ||
+			update.Annotations.OpenWorldHint == nil || *update.Annotations.OpenWorldHint {
+			t.Errorf("update annotations must be read/write, destructive, idempotent, closed-world: %+v", update.Annotations)
 		}
-		if update.InputSchema == nil {
-			t.Error("update input schema missing")
+		uprops, urequired := rawSchema(t, update.InputSchema)
+		for _, prop := range []string{"identifier", "name", "description", "priority"} {
+			if _, ok := uprops[prop]; !ok {
+				t.Errorf("update schema missing property %q (have %v)", prop, uprops)
+			}
+		}
+		if len(urequired) != 1 || urequired[0] != "identifier" {
+			t.Errorf("update required = %v, want [identifier]", urequired)
+		}
+		if upriority, ok := uprops["priority"]; !ok || len(upriority["enum"].([]any)) != 5 {
+			t.Errorf("update priority enum missing or incomplete: %+v", upriority)
 		}
 	})
 }
