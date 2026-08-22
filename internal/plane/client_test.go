@@ -1668,3 +1668,71 @@ func TestClientCreateWorkItemRelation(t *testing.T) {
 		}
 	})
 }
+
+func TestClientTransitionIntakeWorkItem(t *testing.T) {
+	cfg := &config.Config{
+		PlaneAPIKey:        "test-key",
+		PlaneBaseURL:       "https://plane.example.com",
+		PlaneWorkspaceSlug: "test-workspace",
+	}
+	client := NewClient(cfg)
+	var capturedBody map[string]any
+	client.HTTPClient.Transport = mockTransport(func(req *http.Request) (*http.Response, error) {
+		expectedPath := "/api/v1/workspaces/test-workspace/projects/project-1/intake-issues/issue-1/"
+		if req.Method != http.MethodPatch {
+			t.Errorf("expected PATCH, got %s", req.Method)
+		}
+		if req.URL.Path != expectedPath {
+			t.Errorf("expected path %q, got %q", expectedPath, req.URL.Path)
+		}
+		if req.URL.Query().Get("expand") != "issue" {
+			t.Errorf("expected expand=issue, got %q", req.URL.Query().Get("expand"))
+		}
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Errorf("failed to read request body: %v", err)
+		}
+		if err := json.Unmarshal(body, &capturedBody); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(`{
+				"id": "intake-1",
+				"issue": {"id": "issue-1", "name": "Incoming request", "sequence_id": 10},
+				"status": 2,
+				"duplicate_to": "issue-target"
+			}`)),
+		}, nil
+	})
+
+	item, err := client.TransitionIntakeWorkItem(context.Background(), "project-1", "issue-1", map[string]any{
+		"status":       2,
+		"duplicate_to": "issue-target",
+	})
+	if err != nil {
+		t.Fatalf("TransitionIntakeWorkItem failed: %v", err)
+	}
+	if item.Status != 2 || item.DuplicateTo == nil || *item.DuplicateTo != "issue-target" {
+		t.Fatalf("unexpected transitioned item: %+v", item)
+	}
+	if capturedBody["status"] != float64(2) || capturedBody["duplicate_to"] != "issue-target" {
+		t.Errorf("unexpected patched body: %+v", capturedBody)
+	}
+}
+
+func TestTransitionNotAppliedErrorMessage(t *testing.T) {
+	err := &TransitionNotAppliedError{
+		Identifier: "ASBX-10",
+		IssueUUID:  "issue-10",
+		Requested:  "accepted",
+		Observed:   "pending",
+		Causes:     []string{"insufficient role", "no default state"},
+	}
+	msg := err.Error()
+	for _, want := range []string{"transition_not_applied", "ASBX-10", `"pending"`, `"accepted"`, "insufficient role", "no default state"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error message missing %q: %s", want, msg)
+		}
+	}
+}
