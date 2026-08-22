@@ -635,6 +635,29 @@ func TestClientGetIntakeWorkItemUsesUnderlyingIssueID(t *testing.T) {
 	}
 }
 
+func TestEnrichmentNotAppliedErrorMessage(t *testing.T) {
+	err := &EnrichmentNotAppliedError{
+		Identifier:    "ASBX-10",
+		IssueUUID:     "issue-10",
+		IgnoredFields: []string{"name", "priority"},
+		Causes:        []string{"cause one", "cause two"},
+	}
+	want := "enrichment_not_applied: intake record ASBX-10 does not reflect the requested update (HTTP 2xx but Plane did not store: name, priority); likely causes: cause one; cause two"
+	if err.Error() != want {
+		t.Errorf("Error() = %q, want %q", err.Error(), want)
+	}
+
+	statusErr := &EnrichmentNotAppliedError{
+		Identifier:    "ASBX-11",
+		IssueUUID:     "issue-11",
+		StatusChanged: true,
+		Causes:        []string{"status drifted"},
+	}
+	if !strings.Contains(statusErr.Error(), "enrichment_not_applied: intake record ASBX-11") {
+		t.Errorf("status-change variant missing header: %q", statusErr.Error())
+	}
+}
+
 func TestClientCreateIntakeWorkItemNestsIssueFields(t *testing.T) {
 	// Arrange
 	cfg := &config.Config{

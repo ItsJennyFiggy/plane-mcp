@@ -235,7 +235,8 @@ Intake submission details:
 * Creation returns the Intake record id, the underlying issue UUID, the resolved project-prefixed identifier (e.g. `ASBX-10`), and canonical pending status. If Plane's create response omits expanded issue data, the identifier is reconciled from a fresh Intake list read or the call fails loudly rather than guessing.
 * Priority is validated client-side against `urgent|high|medium|low|none`, mirroring Plane's server-side validation, so bad values fail without an API round-trip.
 * **Verified enrichment:** every requested field is re-read after the PATCH. Plane's Intake endpoint silently drops unsupported issue fields instead of rejecting them, so any field that fails verification is reported as a typed `enrichment_not_applied` error naming the ignored fields — updates are never claimed successful when they were not stored. An enrichment that unexpectedly changes the triage status is also rejected.
-* Enrichment is idempotent: re-running with already-stored values reports `No change needed` without writes.
+* **Pending-only boundary:** the record's current state is re-read before any decision, and disposed records (`accepted`, `declined`, `snoozed`, `duplicate`) are rejected — re-open them through the triage tools instead of enriching them.
+* Enrichment is idempotent: re-running with already-stored values reports `No change needed` without writes, based on a fresh detail read rather than the queue snapshot.
 
 **Deferred surfaces:** read-only Intake activity/history retrieval is deferred because no stable PAT API evidence exists for attributing submission and triage actions. Intake deletion is omitted entirely: its safety and verification contract could not be demonstrated against production data.
 

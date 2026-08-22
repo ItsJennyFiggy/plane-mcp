@@ -1329,12 +1329,37 @@ func createIntakeWorkItem(ctx context.Context, args CreateIntakeWorkItemArgs, cl
 		}
 		created.ResolvedIdentifier = deriveIntakeIdentifier(project, created)
 	}
+	// Fail closed on the advertised output contract: both identifiers plus
+	// canonical pending status and IN_APP attribution must be established,
+	// otherwise report the response as unusable rather than a success.
+	if err := validateCreatedIntake(created); err != nil {
+		return toolError(fmt.Sprintf("intake work item creation returned an unexpected record: %v", err)), nil
+	}
 
 	yamlOut, err := formatter.FormatIntakeWorkItemsYAML(ctx, []plane.IntakeWorkItem{*created})
 	if err != nil {
 		return toolError(fmt.Sprintf("failed to format created intake work item: %v", err)), nil
 	}
 	return toolText(yamlOut), nil
+}
+
+// validateCreatedIntake enforces the creation output contract: a usable
+// underlying issue UUID, a derivable canonical identifier, pending status,
+// and IN_APP source attribution.
+func validateCreatedIntake(created *plane.IntakeWorkItem) error {
+	if created.UnderlyingIssueID() == "" {
+		return fmt.Errorf("no underlying issue UUID in the Plane response; cannot return the advertised issue identifier")
+	}
+	if created.ResolvedIdentifier == "" {
+		return fmt.Errorf("could not derive the canonical identifier from the Plane response")
+	}
+	if created.Status != plane.IntakeStatusPending {
+		return fmt.Errorf("expected canonical pending status, got %q", plane.IntakeStatusName(created.Status))
+	}
+	if created.Source != "IN_APP" {
+		return fmt.Errorf("expected IN_APP source attribution, got %q", created.Source)
+	}
+	return nil
 }
 
 // verifyIntakeEnrichment re-reads the intake record after a PATCH carrying
@@ -1424,9 +1449,29 @@ func updateIntakeWorkItem(ctx context.Context, args UpdateIntakeWorkItemArgs, cl
 		return toolError(fmt.Sprintf("intake work item %s has no underlying issue UUID in the Plane response", args.Identifier)), nil
 	}
 
-	// Idempotent short-circuit: skip all writes when the record already
-	// carries every requested value.
-	current := matched.UnderlyingIssue()
+	// Re-read the detail record before any decision: the queue list snapshot
+	// can be stale, and both the pending-status gate and the no-op decision
+	// must reflect current state, not a prior read.
+	currentRec, err := client.GetIntakeWorkItem(ctx, project.ID, issueUUID)
+	if err != nil {
+		return toolError(fmt.Sprintf("failed to read current state of intake work item %s: %v", args.Identifier, err)), nil
+	}
+	if currentRec == nil {
+		return toolError(fmt.Sprintf("failed to read current state of intake work item %s: Plane returned an empty response", args.Identifier)), nil
+	}
+
+	// Enrichment is restricted to pending records awaiting disposition; a
+	// disposed record must be re-opened through triage instead.
+	if currentRec.Status != plane.IntakeStatusPending {
+		return toolError(fmt.Sprintf(
+			"intake work item %s has status %q; enrichment is restricted to pending Intake items awaiting disposition",
+			args.Identifier, plane.IntakeStatusName(currentRec.Status),
+		)), nil
+	}
+
+	// Idempotent short-circuit: skip all writes when the freshly re-read
+	// record already carries every requested value.
+	current := currentRec.UnderlyingIssue()
 	unchanged := true
 	if want, ok := fields["name"].(string); ok && (current == nil || current.Name != want) {
 		unchanged = false
@@ -1438,8 +1483,8 @@ func updateIntakeWorkItem(ctx context.Context, args UpdateIntakeWorkItemArgs, cl
 		unchanged = false
 	}
 	if unchanged {
-		matched.ResolvedIdentifier = args.Identifier
-		yamlOut, err := formatter.FormatIntakeWorkItemsYAML(ctx, []plane.IntakeWorkItem{*matched})
+		currentRec.ResolvedIdentifier = args.Identifier
+		yamlOut, err := formatter.FormatIntakeWorkItemsYAML(ctx, []plane.IntakeWorkItem{*currentRec})
 		if err != nil {
 			return toolError(fmt.Sprintf("failed to format intake work item %s: %v", args.Identifier, err)), nil
 		}
@@ -1453,7 +1498,7 @@ func updateIntakeWorkItem(ctx context.Context, args UpdateIntakeWorkItemArgs, cl
 		return toolError(fmt.Sprintf("failed to update intake work item %s: %v", args.Identifier, err)), nil
 	}
 
-	verified, err := verifyIntakeEnrichment(ctx, client, project, args.Identifier, issueUUID, matched.Status, fields)
+	verified, err := verifyIntakeEnrichment(ctx, client, project, args.Identifier, issueUUID, currentRec.Status, fields)
 	if err != nil {
 		return toolError(err.Error()), nil
 	}

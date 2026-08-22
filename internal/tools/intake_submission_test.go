@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -31,6 +32,17 @@ func newCreatedIntakeRecord() *plane.IntakeWorkItem {
 	}
 }
 
+// realIntakeFormatter delegates to the production formatter so assertions can
+// cover the actual serialized output rather than a static echo.
+func realIntakeFormatter(captured *[]plane.IntakeWorkItem) *mockFormatter {
+	return &mockFormatter{formatIntakeWorkItemsYAMLFn: func(ctx context.Context, items []plane.IntakeWorkItem) (string, error) {
+		if captured != nil {
+			*captured = items
+		}
+		return plane.FormatIntakeWorkItemsYAML(ctx, items)
+	}}
+}
+
 func resultText(t *testing.T, result *mcp.CallToolResult) string {
 	t.Helper()
 	if result == nil || len(result.Content) == 0 {
@@ -43,13 +55,18 @@ func resultText(t *testing.T, result *mcp.CallToolResult) string {
 	return text.Text
 }
 
+// resultString renders an arbitrary body field for assertions.
+func resultString(value any) string {
+	s, _ := value.(string)
+	return s
+}
+
 func TestCreateIntakeWorkItem(t *testing.T) {
 	resolver := newIntakeTriageResolver()
 
 	t.Run("success submits nested issue body and reports identifiers", func(t *testing.T) {
 		var gotProjectID string
 		var gotBody map[string]any
-		var formatted []plane.IntakeWorkItem
 		client := &mockClient{
 			createIntakeItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.IntakeWorkItem, error) {
 				gotProjectID = projectID
@@ -57,14 +74,13 @@ func TestCreateIntakeWorkItem(t *testing.T) {
 				return newCreatedIntakeRecord(), nil
 			},
 		}
-		formatter := newIntakeTriageFormatter(&formatted)
 
 		result, err := createIntakeWorkItem(context.Background(), CreateIntakeWorkItemArgs{
 			Project:     "ASBX",
 			Name:        "Quick idea",
 			Description: "A simple idea",
 			Priority:    "high",
-		}, client, resolver, formatter)
+		}, client, resolver, realIntakeFormatter(nil))
 		if err != nil || result.IsError {
 			t.Fatalf("create failed: %v %+v", err, result)
 		}
@@ -72,25 +88,27 @@ func TestCreateIntakeWorkItem(t *testing.T) {
 		if gotProjectID != "project-1" {
 			t.Errorf("expected resolved project UUID, got %q", gotProjectID)
 		}
-		if gotBody["name"] != "Quick idea" {
-			t.Errorf("expected name in issue body, got %+v", gotBody)
-		}
-		if gotBody["priority"] != "high" {
-			t.Errorf("expected priority in issue body, got %+v", gotBody)
+		if gotBody["name"] != "Quick idea" || gotBody["priority"] != "high" {
+			t.Errorf("unexpected issue body: %+v", gotBody)
 		}
 		html, _ := gotBody["description_html"].(string)
 		if html == "" || !strings.HasPrefix(html, "<") {
 			t.Errorf("expected HTML description, got %q", html)
 		}
-		if len(formatted) != 1 {
-			t.Fatalf("expected one formatted item, got %d", len(formatted))
-		}
-		item := formatted[0]
-		if item.ID != "intake-11" || item.Status != plane.IntakeStatusPending || item.Source != "IN_APP" {
-			t.Errorf("unexpected formatted record: %+v", item)
-		}
-		if item.UnderlyingIssueID() != "issue-uuid-11" {
-			t.Errorf("expected underlying issue UUID, got %q", item.UnderlyingIssueID())
+
+		// The serialized output must carry both advertised identifiers plus
+		// canonical status and attribution.
+		out := resultText(t, result)
+		for _, want := range []string{
+			"intake_id:", "intake-11",
+			"issue_id:", "issue-uuid-11",
+			"identifier: ASBX-11",
+			"status: pending",
+			"source: IN_APP",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("serialized output missing %q:\n%s", want, out)
+			}
 		}
 	})
 
@@ -107,7 +125,7 @@ func TestCreateIntakeWorkItem(t *testing.T) {
 			Project:     "ASBX",
 			Name:        "Idea",
 			Description: "Plain words here",
-		}, client, resolver, newIntakeTriageFormatter(nil))
+		}, client, resolver, realIntakeFormatter(nil))
 		if err != nil || result.IsError {
 			t.Fatalf("create failed: %v %+v", err, result)
 		}
@@ -120,6 +138,7 @@ func TestCreateIntakeWorkItem(t *testing.T) {
 		unexpanded := &plane.IntakeWorkItem{
 			ID:     "intake-11",
 			Status: plane.IntakeStatusPending,
+			Source: "IN_APP",
 			Issue:  plane.Expandable[plane.IntakeIssue]{ID: "issue-uuid-11"},
 		}
 		listCalls := 0
@@ -135,12 +154,15 @@ func TestCreateIntakeWorkItem(t *testing.T) {
 
 		result, err := createIntakeWorkItem(context.Background(), CreateIntakeWorkItemArgs{
 			Project: "ASBX", Name: "Quick idea",
-		}, client, resolver, newIntakeTriageFormatter(nil))
+		}, client, resolver, realIntakeFormatter(nil))
 		if err != nil || result.IsError {
 			t.Fatalf("create failed: %v %+v", err, result)
 		}
 		if listCalls != 1 {
 			t.Fatalf("expected one reconcile list read, got %d", listCalls)
+		}
+		if out := resultText(t, result); !strings.Contains(out, "identifier: ASBX-11") {
+			t.Errorf("reconciled identifier missing from output:\n%s", out)
 		}
 	})
 
@@ -148,6 +170,7 @@ func TestCreateIntakeWorkItem(t *testing.T) {
 		unexpanded := &plane.IntakeWorkItem{
 			ID:     "intake-11",
 			Status: plane.IntakeStatusPending,
+			Source: "IN_APP",
 			Issue:  plane.Expandable[plane.IntakeIssue]{ID: "issue-uuid-11"},
 		}
 		client := &mockClient{
@@ -161,9 +184,78 @@ func TestCreateIntakeWorkItem(t *testing.T) {
 
 		result, _ := createIntakeWorkItem(context.Background(), CreateIntakeWorkItemArgs{
 			Project: "ASBX", Name: "Quick idea",
-		}, client, resolver, newIntakeTriageFormatter(nil))
+		}, client, resolver, realIntakeFormatter(nil))
 		if !result.IsError || !strings.Contains(resultText(t, result), "could not be confirmed in the queue") {
 			t.Fatalf("expected reconcile failure error, got: %+v", result)
+		}
+	})
+
+	t.Run("fails closed on contract-violating responses", func(t *testing.T) {
+		cases := []struct {
+			name   string
+			record *plane.IntakeWorkItem
+			want   string
+		}{
+			{
+				name: "non-pending status",
+				record: func() *plane.IntakeWorkItem {
+					r := newCreatedIntakeRecord()
+					r.Status = plane.IntakeStatusAccepted
+					return r
+				}(),
+				want: "expected canonical pending status",
+			},
+			{
+				name: "missing source attribution",
+				record: func() *plane.IntakeWorkItem {
+					r := newCreatedIntakeRecord()
+					r.Source = ""
+					return r
+				}(),
+				want: "expected IN_APP source attribution",
+			},
+			{
+				name: "wrong source attribution",
+				record: func() *plane.IntakeWorkItem {
+					r := newCreatedIntakeRecord()
+					r.Source = "EMAIL"
+					return r
+				}(),
+				want: "expected IN_APP source attribution",
+			},
+			{
+				name: "missing underlying issue UUID",
+				record: func() *plane.IntakeWorkItem {
+					// Expanded issue with a sequence but an empty ID: the
+					// identifier derives fine, so validation must catch the
+					// unusable output contract.
+					r := newCreatedIntakeRecord()
+					r.Issue = plane.Expandable[plane.IntakeIssue]{Val: &plane.IntakeIssue{
+						Name: "Quick idea", SequenceID: 11,
+					}}
+					return r
+				}(),
+				want: "no underlying issue UUID",
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				client := &mockClient{
+					createIntakeItemFn: func(ctx context.Context, projectID string, body map[string]any) (*plane.IntakeWorkItem, error) {
+						return tc.record, nil
+					},
+					listIntakeWorkItemsFn: func(ctx context.Context, projectID string) ([]plane.IntakeWorkItem, error) {
+						return nil, nil
+					},
+				}
+
+				result, _ := createIntakeWorkItem(context.Background(), CreateIntakeWorkItemArgs{
+					Project: "ASBX", Name: "Quick idea",
+				}, client, resolver, realIntakeFormatter(nil))
+				if !result.IsError || !strings.Contains(resultText(t, result), tc.want) {
+					t.Fatalf("expected fail-closed error containing %q, got: %+v", tc.want, result)
+				}
+			})
 		}
 	})
 
@@ -176,7 +268,7 @@ func TestCreateIntakeWorkItem(t *testing.T) {
 
 		result, _ := createIntakeWorkItem(context.Background(), CreateIntakeWorkItemArgs{
 			Project: "ASBX", Name: "   ",
-		}, client, resolver, newIntakeTriageFormatter(nil))
+		}, client, resolver, realIntakeFormatter(nil))
 		if !result.IsError || !strings.Contains(resultText(t, result), "name is required") {
 			t.Fatalf("expected name-required error, got: %+v", result)
 		}
@@ -192,16 +284,25 @@ func TestCreateIntakeWorkItem(t *testing.T) {
 			return nil, nil
 		}}
 
-		for _, bad := range []string{"critical", "HIGH", "-2"} {
+		for _, bad := range []string{"critical", "-2", "asap"} {
 			result, _ := createIntakeWorkItem(context.Background(), CreateIntakeWorkItemArgs{
-				Project: "ASBX", Name: "Idea", Priority: "critical",
-			}, client, resolver, newIntakeTriageFormatter(nil))
-			if !result.IsError || !strings.Contains(resultText(t, result), "invalid priority") {
+				Project: "ASBX", Name: "Idea", Priority: bad,
+			}, client, resolver, realIntakeFormatter(nil))
+			if !result.IsError || !strings.Contains(resultText(t, result), fmt.Sprintf("invalid priority %q", bad)) {
 				t.Fatalf("priority %q: expected validation error, got: %+v", bad, result)
 			}
 		}
 		if calls != 0 {
 			t.Fatalf("expected no API call for invalid priorities, got %d", calls)
+		}
+	})
+
+	t.Run("priority values are normalized case-insensitively", func(t *testing.T) {
+		for input, want := range map[string]string{"HIGH": "high", " Urgent ": "urgent"} {
+			got, err := normalizeIntakePriority(input)
+			if err != nil || got != want {
+				t.Errorf("normalizeIntakePriority(%q) = %q, %v; want %q, nil", input, got, err, want)
+			}
 		}
 	})
 
@@ -212,17 +313,11 @@ func TestCreateIntakeWorkItem(t *testing.T) {
 
 		result, _ := createIntakeWorkItem(context.Background(), CreateIntakeWorkItemArgs{
 			Project: "ASBX", Name: "Idea", Priority: "high",
-		}, client, resolver, newIntakeTriageFormatter(nil))
+		}, client, resolver, realIntakeFormatter(nil))
 		if !result.IsError || !strings.Contains(resultText(t, result), "failed to create intake work item") {
 			t.Fatalf("expected creation failure, got: %+v", result)
 		}
 	})
-}
-
-// resultString renders an arbitrary body field for assertions.
-func resultString(value any) string {
-	s, _ := value.(string)
-	return s
 }
 
 func TestUpdateIntakeWorkItem(t *testing.T) {
@@ -235,41 +330,51 @@ func TestUpdateIntakeWorkItem(t *testing.T) {
 		return record
 	}
 
-	t.Run("success verifies stored fields and annotates visibility", func(t *testing.T) {
-		pending := newPendingRecord("Idea", "none")
+	// serveCurrent returns a getIntakeWorkItemFn serving deep-ish copies of
+	// the caller-owned current record, so PATCH callbacks can mutate it and
+	// subsequent reads observe the mutation.
+	serveCurrent := func(current *plane.IntakeWorkItem, reads *int) func(ctx context.Context, projectID, issueID string) (*plane.IntakeWorkItem, error) {
+		return func(ctx context.Context, projectID, issueID string) (*plane.IntakeWorkItem, error) {
+			if reads != nil {
+				*reads++
+			}
+			cp := *current
+			if current.Issue.Val != nil {
+				iv := *current.Issue.Val
+				cp.Issue.Val = &iv
+			}
+			return &cp, nil
+		}
+	}
+
+	t.Run("success verifies stored fields including description and annotates visibility", func(t *testing.T) {
+		current := newPendingRecord("Idea", "none")
 		var patchedUUID string
 		var patchedBody map[string]any
 		var formatted []plane.IntakeWorkItem
+		detailReads := 0
 		client := &mockClient{
-			listIntakeWorkItemsFn: baseIntakeListFn(pending),
+			listIntakeWorkItemsFn: baseIntakeListFn(newPendingRecord("Idea", "none")),
 			transitionIntakeItemFn: func(ctx context.Context, projectID, issueID string, body map[string]any) (*plane.IntakeWorkItem, error) {
 				patchedUUID = issueID
 				patchedBody = body
-				updated := *pending
-				updated.Issue = plane.Expandable[plane.IntakeIssue]{Val: &plane.IntakeIssue{
+				current.Issue.Val = &plane.IntakeIssue{
 					ID: "issue-10", SequenceID: 10, Name: "Renamed idea", Priority: "high",
 					DescriptionHTML: "<p>Rich text</p>",
-				}}
-				return &updated, nil
+				}
+				cp := *current
+				return &cp, nil
 			},
-			getIntakeWorkItemFn: func(ctx context.Context, projectID, issueID string) (*plane.IntakeWorkItem, error) {
-				updated := *pending
-				updated.Issue = plane.Expandable[plane.IntakeIssue]{Val: &plane.IntakeIssue{
-					ID: "issue-10", SequenceID: 10, Name: "Renamed idea", Priority: "high",
-					DescriptionHTML: "<p>Rich text</p>",
-				}}
-				return &updated, nil
-			},
+			getIntakeWorkItemFn:       serveCurrent(current, &detailReads),
 			getWorkItemByIdentifierFn: visibleTargetFn(),
 		}
-		formatter := newIntakeTriageFormatter(&formatted)
 
 		name := "Renamed idea"
 		desc := "Rich text"
 		priority := "high"
 		result, err := updateIntakeWorkItem(context.Background(), UpdateIntakeWorkItemArgs{
 			Identifier: "ASBX-10", Name: &name, Description: &desc, Priority: &priority,
-		}, client, resolver, formatter)
+		}, client, resolver, realIntakeFormatter(&formatted))
 		if err != nil || result.IsError {
 			t.Fatalf("update failed: %v %+v", err, result)
 		}
@@ -284,64 +389,113 @@ func TestUpdateIntakeWorkItem(t *testing.T) {
 		if issueFields["name"] != "Renamed idea" || issueFields["priority"] != "high" {
 			t.Errorf("unexpected issue fields: %+v", issueFields)
 		}
+		if got, want := resultString(issueFields["description_html"]), "<p>Rich text</p>"; got != want {
+			t.Errorf("PATCH description_html = %q, want %q", got, want)
+		}
 		if _, hasStatus := patchedBody["status"]; hasStatus {
 			t.Errorf("enrichment must not touch triage status, body was %+v", patchedBody)
+		}
+		// Two detail reads are mandatory: the pre-write freshness read and
+		// the post-write verification read.
+		if detailReads != 2 {
+			t.Errorf("expected two detail reads (freshness + verification), got %d", detailReads)
 		}
 		if len(formatted) != 1 || formatted[0].UnderlyingIssue().Name != "Renamed idea" || formatted[0].ResolvedIdentifier != "ASBX-10" {
 			t.Fatalf("unexpected verified output: %+v", formatted)
 		}
 	})
 
-	t.Run("silently ignored fields are reported as enrichment_not_applied", func(t *testing.T) {
-		pending := newPendingRecord("Idea", "none")
-		client := &mockClient{
-			listIntakeWorkItemsFn: baseIntakeListFn(pending),
-			transitionIntakeItemFn: func(ctx context.Context, projectID, issueID string, body map[string]any) (*plane.IntakeWorkItem, error) {
-				stillOld := *pending
-				return &stillOld, nil
+	t.Run("silently ignored fields are reported as enrichment_not_applied per field", func(t *testing.T) {
+		cases := []struct {
+			name     string
+			args     func() UpdateIntakeWorkItemArgs
+			wantTerm string
+		}{
+			{
+				name: "name ignored",
+				args: func() UpdateIntakeWorkItemArgs {
+					v := "Renamed idea"
+					return UpdateIntakeWorkItemArgs{Identifier: "ASBX-10", Name: &v}
+				},
+				wantTerm: "name",
 			},
-			getIntakeWorkItemFn: func(ctx context.Context, projectID, issueID string) (*plane.IntakeWorkItem, error) {
-				stillOld := *pending
-				return &stillOld, nil
+			{
+				name: "description ignored",
+				args: func() UpdateIntakeWorkItemArgs {
+					v := "New words"
+					return UpdateIntakeWorkItemArgs{Identifier: "ASBX-10", Description: &v}
+				},
+				wantTerm: "description",
+			},
+			{
+				name: "priority ignored",
+				args: func() UpdateIntakeWorkItemArgs {
+					v := "urgent"
+					return UpdateIntakeWorkItemArgs{Identifier: "ASBX-10", Priority: &v}
+				},
+				wantTerm: "priority",
 			},
 		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				current := newPendingRecord("Idea", "none")
+				client := &mockClient{
+					listIntakeWorkItemsFn: baseIntakeListFn(newPendingRecord("Idea", "none")),
+					transitionIntakeItemFn: func(ctx context.Context, projectID, issueID string, body map[string]any) (*plane.IntakeWorkItem, error) {
+						// The write is a no-op on the server side: the
+						// verification read still sees the old values.
+						cp := *current
+						return &cp, nil
+					},
+					getIntakeWorkItemFn: serveCurrent(current, nil),
+				}
 
-		name := "Renamed idea"
-		result, _ := updateIntakeWorkItem(context.Background(), UpdateIntakeWorkItemArgs{
-			Identifier: "ASBX-10", Name: &name,
-		}, client, resolver, newIntakeTriageFormatter(nil))
-		if !result.IsError {
-			t.Fatal("expected MCP tool error for ignored enrichment")
-		}
-		text := resultText(t, result)
-		for _, want := range []string{"enrichment_not_applied", "name", "silently drops"} {
-			if !strings.Contains(text, want) {
-				t.Errorf("error text missing %q: %s", want, text)
-			}
+				result, _ := updateIntakeWorkItem(context.Background(), tc.args(), client, resolver, realIntakeFormatter(nil))
+				if !result.IsError {
+					t.Fatal("expected MCP tool error for ignored enrichment")
+				}
+				text := resultText(t, result)
+				for _, want := range []string{"enrichment_not_applied", tc.wantTerm, "silently drops"} {
+					if !strings.Contains(text, want) {
+						t.Errorf("error text missing %q: %s", want, text)
+					}
+				}
+			})
 		}
 	})
 
 	t.Run("status change during enrichment is reported as an error", func(t *testing.T) {
-		pending := newPendingRecord("Idea", "none")
+		// A concurrent actor transitions the record between the write and
+		// the verification read: freshness read sees pending, verification
+		// read sees accepted with the requested field applied.
+		current := newPendingRecord("Idea", "none")
+		detailReads := 0
 		client := &mockClient{
-			listIntakeWorkItemsFn: baseIntakeListFn(pending),
+			listIntakeWorkItemsFn: baseIntakeListFn(newPendingRecord("Idea", "none")),
 			transitionIntakeItemFn: func(ctx context.Context, projectID, issueID string, body map[string]any) (*plane.IntakeWorkItem, error) {
-				moved := *pending
-				moved.Status = plane.IntakeStatusAccepted
-				return &moved, nil
+				cp := *current
+				return &cp, nil
 			},
 			getIntakeWorkItemFn: func(ctx context.Context, projectID, issueID string) (*plane.IntakeWorkItem, error) {
-				moved := *pending
-				moved.Status = plane.IntakeStatusAccepted
-				moved.Issue.Val.Name = "Renamed idea"
-				return &moved, nil
+				detailReads++
+				cp := *current
+				if current.Issue.Val != nil {
+					iv := *current.Issue.Val
+					cp.Issue.Val = &iv
+				}
+				if detailReads >= 2 {
+					// Concurrent triage transition lands before verification.
+					cp.Status = plane.IntakeStatusAccepted
+					cp.Issue.Val.Name = "Renamed idea"
+				}
+				return &cp, nil
 			},
 		}
 
 		name := "Renamed idea"
 		result, _ := updateIntakeWorkItem(context.Background(), UpdateIntakeWorkItemArgs{
 			Identifier: "ASBX-10", Name: &name,
-		}, client, resolver, newIntakeTriageFormatter(nil))
+		}, client, resolver, realIntakeFormatter(nil))
 		if !result.IsError {
 			t.Fatal("expected MCP tool error when enrichment changed triage status")
 		}
@@ -353,22 +507,97 @@ func TestUpdateIntakeWorkItem(t *testing.T) {
 		}
 	})
 
-	t.Run("idempotent no-op skips PATCH when values already match", func(t *testing.T) {
-		pending := newPendingRecord("Idea", "high")
+	t.Run("enrichment is restricted to pending records", func(t *testing.T) {
+		disposed := []struct {
+			status int
+			label  string
+		}{
+			{plane.IntakeStatusAccepted, "accepted"},
+			{plane.IntakeStatusDeclined, "declined"},
+			{plane.IntakeStatusSnoozed, "snoozed"},
+			{plane.IntakeStatusDuplicate, "duplicate"},
+		}
+		for _, tc := range disposed {
+			t.Run(tc.label, func(t *testing.T) {
+				current := newPendingRecord("Idea", "none")
+				patchCalled := false
+				client := &mockClient{
+					listIntakeWorkItemsFn: baseIntakeListFn(newPendingRecord("Idea", "none")),
+					transitionIntakeItemFn: func(ctx context.Context, projectID, issueID string, body map[string]any) (*plane.IntakeWorkItem, error) {
+						patchCalled = true
+						cp := *current
+						return &cp, nil
+					},
+					getIntakeWorkItemFn: serveCurrent(current, nil),
+				}
+				current.Status = tc.status
+
+				name := "Whatever"
+				result, _ := updateIntakeWorkItem(context.Background(), UpdateIntakeWorkItemArgs{
+					Identifier: "ASBX-10", Name: &name,
+				}, client, resolver, realIntakeFormatter(nil))
+				if !result.IsError {
+					t.Fatalf("%s: expected rejection", tc.label)
+				}
+				text := resultText(t, result)
+				if !strings.Contains(text, fmt.Sprintf("%q; enrichment is restricted to pending", tc.label)) {
+					t.Errorf("%s: unexpected error text: %s", tc.label, text)
+				}
+				if patchCalled {
+					t.Errorf("%s: enrichment PATCHed a disposed record", tc.label)
+				}
+			})
+		}
+	})
+
+	t.Run("no-op decision uses the fresh detail read, not the stale queue list", func(t *testing.T) {
+		// The queue list claims the requested value is already stored; only
+		// the fresh detail read reveals it is not. The handler must PATCH.
+		current := newPendingRecord("Idea", "none")
 		patchCalls := 0
 		client := &mockClient{
-			listIntakeWorkItemsFn: baseIntakeListFn(pending),
+			listIntakeWorkItemsFn: baseIntakeListFn(newPendingRecord("Fresh name", "none")),
+			transitionIntakeItemFn: func(ctx context.Context, projectID, issueID string, body map[string]any) (*plane.IntakeWorkItem, error) {
+				patchCalls++
+				current.Issue.Val = &plane.IntakeIssue{
+					ID: "issue-10", SequenceID: 10, Name: "Fresh name", Priority: "none",
+				}
+				cp := *current
+				return &cp, nil
+			},
+			getIntakeWorkItemFn:       serveCurrent(current, nil),
+			getWorkItemByIdentifierFn: visibleTargetFn(),
+		}
+
+		name := "Fresh name"
+		result, err := updateIntakeWorkItem(context.Background(), UpdateIntakeWorkItemArgs{
+			Identifier: "ASBX-10", Name: &name,
+		}, client, resolver, realIntakeFormatter(nil))
+		if err != nil || result.IsError {
+			t.Fatalf("update failed: %v %+v", err, result)
+		}
+		if patchCalls != 1 {
+			t.Fatalf("expected the stale-list shortcut to be bypassed and one PATCH issued, got %d", patchCalls)
+		}
+	})
+
+	t.Run("idempotent no-op skips PATCH when the fresh read shows matching values", func(t *testing.T) {
+		current := newPendingRecord("Idea", "high")
+		patchCalls := 0
+		client := &mockClient{
+			listIntakeWorkItemsFn: baseIntakeListFn(newPendingRecord("Idea", "high")),
 			transitionIntakeItemFn: func(ctx context.Context, projectID, issueID string, body map[string]any) (*plane.IntakeWorkItem, error) {
 				patchCalls++
 				return nil, errors.New("must not be called")
 			},
+			getIntakeWorkItemFn: serveCurrent(current, nil),
 		}
 
 		name := "Idea"
 		priority := "high"
 		result, err := updateIntakeWorkItem(context.Background(), UpdateIntakeWorkItemArgs{
 			Identifier: "ASBX-10", Name: &name, Priority: &priority,
-		}, client, resolver, newIntakeTriageFormatter(nil))
+		}, client, resolver, realIntakeFormatter(nil))
 		if err != nil || result.IsError {
 			t.Fatalf("idempotent update failed: %v %+v", err, result)
 		}
@@ -380,20 +609,67 @@ func TestUpdateIntakeWorkItem(t *testing.T) {
 		}
 	})
 
+	t.Run("PATCH API failure surfaces as tool error", func(t *testing.T) {
+		current := newPendingRecord("Idea", "none")
+		client := &mockClient{
+			listIntakeWorkItemsFn: baseIntakeListFn(newPendingRecord("Idea", "none")),
+			transitionIntakeItemFn: func(ctx context.Context, projectID, issueID string, body map[string]any) (*plane.IntakeWorkItem, error) {
+				return nil, errors.New("500 Internal Server Error")
+			},
+			getIntakeWorkItemFn: serveCurrent(current, nil),
+		}
+
+		name := "Renamed idea"
+		result, _ := updateIntakeWorkItem(context.Background(), UpdateIntakeWorkItemArgs{
+			Identifier: "ASBX-10", Name: &name,
+		}, client, resolver, realIntakeFormatter(nil))
+		if !result.IsError || !strings.Contains(resultText(t, result), "failed to update intake work item") {
+			t.Fatalf("expected PATCH failure error, got: %+v", result)
+		}
+	})
+
+	t.Run("verification-read failure surfaces as tool error", func(t *testing.T) {
+		pending := newPendingRecord("Idea", "none")
+		detailReads := 0
+		client := &mockClient{
+			listIntakeWorkItemsFn: baseIntakeListFn(pending),
+			transitionIntakeItemFn: func(ctx context.Context, projectID, issueID string, body map[string]any) (*plane.IntakeWorkItem, error) {
+				renamed := *pending
+				renamed.Issue.Val.Name = "Renamed idea"
+				return &renamed, nil
+			},
+			getIntakeWorkItemFn: func(ctx context.Context, projectID, issueID string) (*plane.IntakeWorkItem, error) {
+				detailReads++
+				if detailReads == 1 {
+					return newPendingRecord("Idea", "none"), nil // freshness read OK
+				}
+				return nil, errors.New("503 Service Unavailable") // verification read fails
+			},
+		}
+
+		name := "Renamed idea"
+		result, _ := updateIntakeWorkItem(context.Background(), UpdateIntakeWorkItemArgs{
+			Identifier: "ASBX-10", Name: &name,
+		}, client, resolver, realIntakeFormatter(nil))
+		if !result.IsError || !strings.Contains(resultText(t, result), "failed to verify intake update") {
+			t.Fatalf("expected verification-read failure error, got: %+v", result)
+		}
+	})
+
 	t.Run("no fields provided is rejected", func(t *testing.T) {
 		result, _ := updateIntakeWorkItem(context.Background(), UpdateIntakeWorkItemArgs{
 			Identifier: "ASBX-10",
-		}, &mockClient{}, resolver, newIntakeTriageFormatter(nil))
+		}, &mockClient{}, resolver, realIntakeFormatter(nil))
 		if !result.IsError || !strings.Contains(resultText(t, result), "nothing to update") {
 			t.Fatalf("expected nothing-to-update error, got: %+v", result)
 		}
 	})
 
-	t.Run("empty replacement name is rejected", func(t *testing.T) {
+	t.Run("empty replacement name is rejected before any API call", func(t *testing.T) {
 		empty := "  "
 		result, _ := updateIntakeWorkItem(context.Background(), UpdateIntakeWorkItemArgs{
 			Identifier: "ASBX-10", Name: &empty,
-		}, &mockClient{}, resolver, newIntakeTriageFormatter(nil))
+		}, &mockClient{}, resolver, realIntakeFormatter(nil))
 		if !result.IsError || !strings.Contains(resultText(t, result), "name cannot be empty") {
 			t.Fatalf("expected empty-name error, got: %+v", result)
 		}
@@ -412,7 +688,7 @@ func TestUpdateIntakeWorkItem(t *testing.T) {
 		bad := "critical"
 		result, _ := updateIntakeWorkItem(context.Background(), UpdateIntakeWorkItemArgs{
 			Identifier: "ASBX-10", Priority: &bad,
-		}, client, resolver, newIntakeTriageFormatter(nil))
+		}, client, resolver, realIntakeFormatter(nil))
 		if !result.IsError || !strings.Contains(resultText(t, result), "invalid priority") {
 			t.Fatalf("expected invalid-priority error, got: %+v", result)
 		}
@@ -429,9 +705,85 @@ func TestUpdateIntakeWorkItem(t *testing.T) {
 		name := "Whatever"
 		result, _ := updateIntakeWorkItem(context.Background(), UpdateIntakeWorkItemArgs{
 			Identifier: "ASBX-99", Name: &name,
-		}, client, resolver, newIntakeTriageFormatter(nil))
+		}, client, resolver, realIntakeFormatter(nil))
 		if !result.IsError || !strings.Contains(resultText(t, result), "not found in the active intake queue") {
 			t.Fatalf("unexpected result for unknown identifier: %+v", result)
+		}
+	})
+}
+
+// TestRegisterWithDeps_IntakeSubmissionTools exercises the actual MCP
+// registration surface over an in-memory client session: presence/absence per
+// profile plus the annotations and schemas of the two new tools.
+func TestRegisterWithDeps_IntakeSubmissionTools(t *testing.T) {
+	ctx := context.Background()
+
+	listTools := func(t *testing.T, profile string) map[string]*mcp.Tool {
+		t.Helper()
+		ct, st := mcp.NewInMemoryTransports()
+		server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
+		registerWithDeps(server, &mockClient{}, &mockResolver{}, &mockFormatter{}, &config.Config{PlaneMCPProfile: profile})
+		if _, err := server.Connect(ctx, st, nil); err != nil {
+			t.Fatalf("server connect failed: %v", err)
+		}
+		client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0"}, nil)
+		cs, err := client.Connect(ctx, ct, nil)
+		if err != nil {
+			t.Fatalf("client connect failed: %v", err)
+		}
+		defer cs.Close()
+
+		tools := map[string]*mcp.Tool{}
+		for tool, err := range cs.Tools(ctx, nil) {
+			if err != nil {
+				t.Fatalf("tools listing failed: %v", err)
+			}
+			tools[tool.Name] = tool
+		}
+		return tools
+	}
+
+	expectations := map[string]map[string]bool{
+		"worker":   {"create_intake_work_item": true, "update_intake_work_item": false},
+		"reviewer": {"create_intake_work_item": true, "update_intake_work_item": false},
+		"planner":  {"create_intake_work_item": true, "update_intake_work_item": true},
+		"full":     {"create_intake_work_item": true, "update_intake_work_item": true},
+	}
+	for profile, expected := range expectations {
+		t.Run(profile, func(t *testing.T) {
+			tools := listTools(t, profile)
+			for name, want := range expected {
+				_, got := tools[name]
+				if got != want {
+					t.Errorf("profile %s: tool %s registered=%v, want %v", profile, name, got, want)
+				}
+			}
+		})
+	}
+
+	t.Run("annotations match the submission/enrichment contracts", func(t *testing.T) {
+		tools := listTools(t, "full")
+
+		create := tools["create_intake_work_item"]
+		if create == nil {
+			t.Fatal("create_intake_work_item missing under full profile")
+		}
+		if create.Annotations == nil || create.Annotations.ReadOnlyHint || create.Annotations.IdempotentHint {
+			t.Errorf("create annotations must be non-readonly, non-idempotent: %+v", create.Annotations)
+		}
+		if create.InputSchema == nil {
+			t.Error("create input schema missing")
+		}
+
+		update := tools["update_intake_work_item"]
+		if update == nil {
+			t.Fatal("update_intake_work_item missing under full profile")
+		}
+		if update.Annotations == nil || !update.Annotations.IdempotentHint {
+			t.Errorf("update annotations must be idempotent: %+v", update.Annotations)
+		}
+		if update.InputSchema == nil {
+			t.Error("update input schema missing")
 		}
 	})
 }
