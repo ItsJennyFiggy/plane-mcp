@@ -3253,6 +3253,9 @@ func updateIntakeWorkItemInputSchema() *jsonschema.Schema {
 	if id, ok := schema.Properties["identifier"]; ok {
 		id.Description = "Project-prefixed identifier of a pending Intake item (e.g. ASBX-10)."
 	}
+	if name, ok := schema.Properties["name"]; ok {
+		name.Description = "Replacement short title."
+	}
 	if priority, ok := schema.Properties["priority"]; ok {
 		priority.Enum = []any{"urgent", "high", "medium", "low", "none"}
 		priority.Description = "Replacement priority."

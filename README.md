@@ -186,8 +186,8 @@ The active profile determines which tools are exposed to the agent. `planner` an
 
 | Profile | Intended for | Surface |
 |---|---|---|
-| `worker` | Implementation agents | Read work items + report progress on their own tasks. No cross-project listing/search, no CRUD, relations, or hierarchy tools. |
-| `reviewer` | Review agents | Read-only access plus comment-back. Can list/inspect items and comments, but cannot create, update, or transition work. |
+| `worker` | Implementation agents | Read work items + report progress on their own tasks, plus Intake idea capture via `create_intake_work_item`. No cross-project listing/search, no CRUD, relations, or hierarchy tools. |
+| `reviewer` | Review agents | Read-only access plus comment-back, plus Intake idea capture via `create_intake_work_item`. Can list/inspect items and comments, but cannot create, update, or transition canonical work. |
 | `planner` | Planning agents | The full tool set, including create/update, assignees, relations, parent/child hierarchy, and cross-project moves. |
 | `full` | Unrestricted | Every tool (same surface as `planner`). |
 

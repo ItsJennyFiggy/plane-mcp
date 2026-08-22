@@ -867,6 +867,43 @@ func TestRegisterWithDeps_IntakeSubmissionTools(t *testing.T) {
 		return props, required
 	}
 
+	// assertPriorityEnum checks a priority property carries exactly the
+	// canonical urgent/high/medium/low/none values.
+	assertPriorityEnum := func(t *testing.T, prop map[string]any) {
+		t.Helper()
+		enumValues, _ := prop["enum"].([]any)
+		want := []string{"urgent", "high", "medium", "low", "none"}
+		if len(enumValues) != len(want) {
+			t.Fatalf("priority enum incomplete: %v", enumValues)
+		}
+		got := map[string]bool{}
+		for _, v := range enumValues {
+			s, ok := v.(string)
+			if !ok {
+				t.Fatalf("priority enum non-string value: %#v", v)
+			}
+			got[s] = true
+		}
+		for _, w := range want {
+			if !got[w] {
+				t.Errorf("priority enum missing %q: %v", w, enumValues)
+			}
+		}
+	}
+
+	// assertExactProps fails when the property set is not exactly expected.
+	assertExactProps := func(t *testing.T, props map[string]map[string]any, want []string) {
+		t.Helper()
+		if len(props) != len(want) {
+			t.Errorf("property set = %v, want exactly %v", props, want)
+		}
+		for _, w := range want {
+			if _, ok := props[w]; !ok {
+				t.Errorf("schema missing property %q", w)
+			}
+		}
+	}
+
 	t.Run("annotations and schemas lock the submission/enrichment contracts", func(t *testing.T) {
 		tools := listTools(t, "full")
 
@@ -882,32 +919,21 @@ func TestRegisterWithDeps_IntakeSubmissionTools(t *testing.T) {
 			t.Errorf("create annotations must be read/write, non-destructive, non-idempotent, closed-world: %+v", create.Annotations)
 		}
 		props, required := rawSchema(t, create.InputSchema)
-		for _, prop := range []string{"project", "name", "description", "priority"} {
-			if _, ok := props[prop]; !ok {
-				t.Errorf("create schema missing property %q (have %v)", prop, props)
-			}
-		}
+		assertExactProps(t, props, []string{"project", "name", "description", "priority"})
 		if len(required) != 2 || required[0] != "project" || required[1] != "name" {
 			t.Errorf("create required = %v, want [project name]", required)
 		}
-		priority := props["priority"]
-		enumValues, _ := priority["enum"].([]any)
-		if len(enumValues) != 5 {
-			t.Fatalf("create priority enum missing or incomplete: %+v", priority)
+		assertPriorityEnum(t, props["priority"])
+		if got := fmt.Sprint(props["priority"]["default"]); got != "none" {
+			t.Errorf("create priority default = %v, want none", props["priority"]["default"])
 		}
-		for _, want := range []any{"urgent", "high", "medium", "low", "none"} {
-			found := false
-			for _, v := range enumValues {
-				if v == want {
-					found = true
-				}
+		for prop, wantDesc := range map[string]string{
+			"name":     "Short idea title.",
+			"priority": "Optional priority; defaults to none.",
+		} {
+			if desc, _ := props[prop]["description"].(string); !strings.Contains(desc, wantDesc) {
+				t.Errorf("create %q description = %q, want to contain %q", prop, desc, wantDesc)
 			}
-			if !found {
-				t.Errorf("create priority enum missing %v: %v", want, enumValues)
-			}
-		}
-		if got := fmt.Sprint(priority["default"]); got != "none" {
-			t.Errorf("create priority default = %v, want none", priority["default"])
 		}
 
 		update := tools["update_intake_work_item"]
@@ -922,16 +948,20 @@ func TestRegisterWithDeps_IntakeSubmissionTools(t *testing.T) {
 			t.Errorf("update annotations must be read/write, destructive, idempotent, closed-world: %+v", update.Annotations)
 		}
 		uprops, urequired := rawSchema(t, update.InputSchema)
-		for _, prop := range []string{"identifier", "name", "description", "priority"} {
-			if _, ok := uprops[prop]; !ok {
-				t.Errorf("update schema missing property %q (have %v)", prop, uprops)
-			}
-		}
+		assertExactProps(t, uprops, []string{"identifier", "name", "description", "priority"})
 		if len(urequired) != 1 || urequired[0] != "identifier" {
 			t.Errorf("update required = %v, want [identifier]", urequired)
 		}
-		if upriority, ok := uprops["priority"]; !ok || len(upriority["enum"].([]any)) != 5 {
-			t.Errorf("update priority enum missing or incomplete: %+v", upriority)
+		assertPriorityEnum(t, uprops["priority"])
+		for prop, wantDesc := range map[string]string{
+			"identifier": "Project-prefixed identifier of a pending Intake item",
+			"name":       "replacement short title",
+			"priority":   "Replacement priority.",
+		} {
+			desc, _ := uprops[prop]["description"].(string)
+			if !strings.Contains(strings.ToLower(desc), strings.ToLower(wantDesc)) {
+				t.Errorf("update %q description = %q, want to contain %q", prop, desc, wantDesc)
+			}
 		}
 	})
 }
